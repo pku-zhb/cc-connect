@@ -280,3 +280,33 @@ func TestNativeMarkdown_FactoryDefaultsAndConcurrentRejection(t *testing.T) {
 		t.Fatal("concurrent in-flight block rejections cannot both retry")
 	}
 }
+
+// Regression: native blocks accept long Unicode answers, but chat.update still
+// rejects an oversized top-level notification text. That rejection caused the
+// engine to post the entire answer again beside an already visible preview.
+func TestNativeMarkdown_LongUnicodeNotificationDoesNotDuplicateFinalReply(t *testing.T) {
+	client, calls := markdownTestClient(t, func(_ int, m capturedMessage) string {
+		if m.path == "/chat.update" && len(m.text) > slackUpdateMaxText {
+			return `{"ok":false,"error":"msg_too_long"}`
+		}
+		return `{"ok":true,"channel":"C1","ts":"1.2"}`
+	})
+	renderer, _ := newMessageRenderer("native")
+	card := &slackStreamingCard{client: client, renderer: renderer, channel: "C1"}
+	content := "## Growth\n\n" + strings.Repeat("中文😀 ~56% **growth**\n", 220)
+	if err := card.Update(context.Background(), content); err != nil {
+		t.Fatal(err)
+	}
+	if err := card.Finalize(context.Background(), content+"\nDone"); err != nil {
+		t.Fatalf("final update triggered a duplicate fallback: %v", err)
+	}
+	if len(*calls) != 2 || (*calls)[1].path != "/chat.update" {
+		t.Fatalf("reply was posted again: %#v", *calls)
+	}
+	for _, m := range *calls {
+		if len(m.text) > slackUpdateMaxText || !utf8.ValidString(m.text) {
+			t.Fatalf("invalid notification text: bytes=%d", len(m.text))
+		}
+	}
+	assertNative(t, (*calls)[1], content+"\nDone")
+}

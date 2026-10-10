@@ -55,8 +55,14 @@ func (r *messageRenderer) options(content string, update bool) []slack.MsgOption
 		// Top-level text is an accessible/notification fallback, not the displayed
 		// body. Disable mrkdwn there so approximation signs cannot become strikes.
 		fallback := core.StripMarkdown(content)
-		if utf8.RuneCountInString(fallback) > slackUpdateMaxText {
-			fallback = string([]rune(fallback)[:slackUpdateMaxText])
+		// chat.update's top-level text has a byte cap even when the displayed
+		// Markdown block is within its separate 12,000-character limit.
+		if len(fallback) > slackUpdateMaxText {
+			end := slackUpdateMaxText
+			for !utf8.RuneStart(fallback[end]) {
+				end--
+			}
+			fallback = fallback[:end]
 		}
 		return []slack.MsgOption{slack.MsgOptionText(fallback, false), slack.MsgOptionDisableMarkdown(),
 			slack.MsgOptionBlocks(markdownBlock{Type: "markdown", Text: content})}
