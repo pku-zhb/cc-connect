@@ -97,3 +97,15 @@ func TestSeparatedCard_BothHiddenOrSilentDoesNotCreateProgress(t *testing.T) {
 		t.Fatal("empty progress or silent final was posted")
 	}
 }
+
+func TestSeparatedCard_CompletionDoesNotAddCheckmark(t *testing.T) {
+	client, calls := markdownTestClient(t, nil)
+	renderer, _ := newMessageRenderer("native")
+	card := &separatedCard{slackStreamingCard: &slackStreamingCard{client: client, renderer: renderer, channel: "C1"}}
+	_ = card.UpdateProgress(context.Background(), "💭 Checking")
+	if err := card.FinalizeAnswer(context.Background(), "💭 Checking", "Answer"); err != nil {
+		t.Fatal(err)
+	}
+	assertNative(t, (*calls)[1], "💭 Checking")
+	assertNative(t, (*calls)[2], "Answer")
+}

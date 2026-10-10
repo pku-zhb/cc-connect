@@ -33,7 +33,7 @@ func (s *separatedProgress) append(text string) {
 }
 func (s *separatedProgress) render() string { return strings.Join(s.entries, "\n\n") }
 func (s *separatedProgress) promote(show bool) {
-	if show {
+	if show && strings.TrimSpace(s.pending.String()) != "" {
 		s.append("💭 " + truncateIf(s.pending.String(), 3500))
 	}
 	s.pending.Reset()

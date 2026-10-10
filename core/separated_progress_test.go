@@ -98,3 +98,14 @@ func TestSeparatedDelivery_EngineSendsFinalWithoutProgressContamination(t *testi
 		})
 	}
 }
+
+func TestSeparatedProgress_EmptyPendingTextDoesNotCreateThinkingEmoji(t *testing.T) {
+	var progress separatedProgress
+	display := DisplayCfg{ThinkingMessages: true}
+	for _, event := range []Event{{Type: EventThinking, Content: "Checking"}, {Type: EventToolUse, ToolName: "Search"}, {Type: EventText, Content: " \n "}, {Type: EventToolUse, ToolName: "Search"}} {
+		progress.observe(event, display)
+	}
+	if progress.render() != "💭 Checking" {
+		t.Fatalf("empty thinking entries leaked: %q", progress.render())
+	}
+}

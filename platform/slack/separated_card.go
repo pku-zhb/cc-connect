@@ -40,12 +40,12 @@ func (c *separatedCard) stopProgress(ctx context.Context, completed bool) {
 	if c.ts == "" {
 		return
 	}
-	marker := "❌"
-	if completed {
-		marker = "✅"
+	content := c.progress
+	if !completed {
+		content = "❌\n\n" + content
 	}
 	// Never post a second progress message during cleanup.
-	if err := c.renderer.update(ctx, c.client, c.channel, c.ts, marker+"\n\n"+c.progress); err != nil {
+	if err := c.renderer.update(ctx, c.client, c.channel, c.ts, content); err != nil {
 		slog.Warn("slack: progress cleanup failed", "error", err)
 	}
 }
