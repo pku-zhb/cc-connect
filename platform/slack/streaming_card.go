@@ -34,6 +34,7 @@ const slackUpdateMaxText = 3500
 // visible until the bot actually has something to show. Implements
 // core.StreamingCard.
 type slackStreamingCard struct {
+	renderer *messageRenderer
 	client   *slack.Client
 	channel  string
 	threadTS string
@@ -54,19 +55,14 @@ func (p *Platform) CreateStreamingCard(ctx context.Context, rctx any) (core.Stre
 	if !ok {
 		return nil, fmt.Errorf("slack: invalid reply context type %T", rctx)
 	}
-	return &slackStreamingCard{client: p.client, channel: rc.channel, threadTS: rc.timestamp}, nil
+	return &slackStreamingCard{client: p.client, renderer: p.renderer, channel: rc.channel, threadTS: rc.timestamp}, nil
 }
 
 // postFresh posts a brand-new message — the lazy first post for an unseen
 // card, or the "too long for chat.update" overflow path used by Finalize.
 // Caller must hold c.mu.
 func (c *slackStreamingCard) postFresh(ctx context.Context, rendered string) (string, error) {
-	opts := []slack.MsgOption{slack.MsgOptionText(rendered, false)}
-	if c.threadTS != "" {
-		opts = append(opts, slack.MsgOptionPostMessageParameters(slack.PostMessageParameters{ThreadTimestamp: c.threadTS}))
-	}
-	_, ts, err := c.client.PostMessageContext(ctx, c.channel, opts...)
-	return ts, err
+	return c.renderer.postAll(ctx, c.client, c.channel, c.threadTS, rendered)
 }
 
 // render posts the card on first use, then edits it in place thereafter.
@@ -80,7 +76,7 @@ func (c *slackStreamingCard) render(ctx context.Context, rendered string) error 
 		c.ts = ts
 		return nil
 	}
-	_, _, _, err := c.client.UpdateMessageContext(ctx, c.channel, c.ts, slack.MsgOptionText(rendered, false))
+	err := c.renderer.update(ctx, c.client, c.channel, c.ts, rendered)
 	return err
 }
 
@@ -88,7 +84,7 @@ func (c *slackStreamingCard) render(ctx context.Context, rendered string) error 
 // subsequent edits are coalesced to ~cardUpdateMinInterval. Transient errors are
 // swallowed (Finalize retries) so a blip doesn't abort the turn.
 //
-// Once the rendered payload exceeds slackUpdateMaxText we stop attempting
+// Once the content exceeds the active renderer's update limit, we stop attempting
 // chat.update edits (which would fail with `msg_too_long`); the existing
 // streaming card stays at the last fitting snapshot and Finalize delivers the
 // full reply via a fresh postMessage.
@@ -101,13 +97,13 @@ func (c *slackStreamingCard) Update(ctx context.Context, content string) error {
 	if c.ts != "" && time.Since(c.lastUpdate) < cardUpdateMinInterval {
 		return nil
 	}
-	rendered := core.MarkdownToSlackMrkdwn(content)
+	rendered := content
 	if rendered == "" || rendered == c.lastSent {
 		return nil
 	}
-	if c.ts != "" && len(rendered) > slackUpdateMaxText {
+	if !c.renderer.fitsUpdate(rendered) && (c.renderer.native() || c.ts != "") {
 		slog.Debug("slack: streaming card update skipped: payload exceeds chat.update limit",
-			"size", len(rendered), "limit", slackUpdateMaxText)
+			"bytes", len(rendered), "native_markdown", c.renderer.native())
 		return nil
 	}
 	if err := c.render(ctx, rendered); err != nil {
@@ -131,17 +127,17 @@ func (c *slackStreamingCard) Finalize(ctx context.Context, content string) error
 	if c.failed {
 		return nil
 	}
-	rendered := core.MarkdownToSlackMrkdwn(content)
+	rendered := content
 	if rendered == "" || rendered == c.lastSent {
 		return nil
 	}
-	// Long reply + card already posted: chat.update would 413 with msg_too_long;
+	// Long reply + card already posted: the active renderer cannot update it;
 	// post a fresh message with the full content instead. This is the in-house
 	// equivalent of "see full reply below" — the partial streaming card stays
 	// visible above the new full-content message.
-	if c.ts != "" && len(rendered) > slackUpdateMaxText {
+	if c.ts != "" && !c.renderer.fitsUpdate(rendered) {
 		slog.Debug("slack: streaming card finalize switching to fresh postMessage (payload exceeds chat.update limit)",
-			"size", len(rendered), "limit", slackUpdateMaxText)
+			"bytes", len(rendered), "native_markdown", c.renderer.native())
 		if _, err := c.postFresh(ctx, rendered); err != nil {
 			c.failed = true
 			return fmt.Errorf("slack: finalize streaming card: %w", err)
@@ -150,6 +146,15 @@ func (c *slackStreamingCard) Finalize(ctx context.Context, content string) error
 		return nil
 	}
 	if err := c.render(ctx, rendered); err != nil {
+		// Native rejection may lower the limit to the legacy text cap.
+		if c.ts != "" && !c.renderer.fitsUpdate(rendered) {
+			if _, postErr := c.postFresh(ctx, rendered); postErr == nil {
+				c.lastSent = rendered
+				return nil
+			} else {
+				err = postErr
+			}
+		}
 		c.failed = true
 		return fmt.Errorf("slack: finalize streaming card: %w", err)
 	}

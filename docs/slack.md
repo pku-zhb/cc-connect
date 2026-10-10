@@ -234,6 +234,31 @@ cc-connect: Here's the project structure...
 
 ---
 
+## Response formatting
+
+Slack replies use native [Markdown blocks](https://docs.slack.dev/reference/block-kit/blocks/markdown-block/) by default. Standard Markdown is sent unchanged, including headings, bold text, links, pipe tables, and fenced code. Ordinary Slack `mrkdwn` text does not render pipe tables.
+
+Configure the rendering mode under the Slack platform options:
+
+```toml
+[projects.platforms.options]
+markdown_mode = "auto"
+```
+
+- `auto` (default): send native Markdown blocks. If Slack explicitly rejects the blocks, retry as legacy `mrkdwn` and use that fallback until the bridge restarts.
+- `native`: require native Markdown blocks and report API failures without falling back.
+- `mrkdwn`: use the previous text conversion and formatting instructions.
+
+The same mode applies to ordinary replies, streaming previews, and aggregated turn cards. Native modes instruct the agent to produce standard Markdown. The top-level text supplies an accessibility and notification fallback; the Markdown block supplies the displayed body. Authentication failures, rate limits, and network errors do not trigger a fallback retry.
+
+Slack documents native Markdown blocks for apps using its platform AI features. Availability and visual rendering must be checked with the target app/workspace; `auto` provides compatibility when Slack returns an explicit block rejection.
+
+Each native Markdown payload is limited to 12,000 Unicode characters. Longer replies are split between Markdown blocks where possible. Oversized tables repeat their header in subsequent messages, and oversized fenced code blocks reopen the fence. A table header plus a single row exceeding the limit is rejected rather than silently truncating data; send such a table as a file. Oversized paragraphs can split within a line, so inline formatting across that boundary is not guaranteed. Long turn cards retain their last preview and post the complete split answer in the same thread.
+
+To use this fork locally, build the web assets first with `make web`, then run `go build -o /tmp/cc-connect-slack-markdown ./cmd/cc-connect`, then point the relevant Slack service launcher at that binary and restart when active turns have finished. Keep the original binary available for rollback. Building the fork does not change the running bridge.
+
+---
+
 ## Architecture
 
 ```

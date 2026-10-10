@@ -47,6 +47,7 @@ type Platform struct {
 	appToken         string
 	allowFrom        string
 	sessionScope     string // "user" (default) | "channel" | "thread"
+	renderer         *messageRenderer
 	client           *slack.Client
 	socket           *socketmode.Client
 	handler          core.MessageHandler
@@ -71,6 +72,10 @@ func New(opts map[string]any) (core.Platform, error) {
 	if botToken == "" || appToken == "" {
 		return nil, fmt.Errorf("slack: bot_token and app_token are required")
 	}
+	renderer, err := newMessageRenderer(opts["markdown_mode"])
+	if err != nil {
+		return nil, err
+	}
 	scope := normalizeSessionScope(opts["session_scope"], shareSessionInChannel)
 	if scope == "thread" {
 		slog.Warn("slack: session_scope=thread gives each Slack thread its own session; " +
@@ -82,6 +87,7 @@ func New(opts map[string]any) (core.Platform, error) {
 		appToken:         appToken,
 		allowFrom:        allowFrom,
 		sessionScope:     scope,
+		renderer:         renderer,
 		channelNameCache: make(map[string]string),
 	}, nil
 }
@@ -495,14 +501,7 @@ func (p *Platform) Reply(ctx context.Context, rctx any, content string) error {
 		return fmt.Errorf("slack: invalid reply context type %T", rctx)
 	}
 
-	opts := []slack.MsgOption{
-		slack.MsgOptionText(core.MarkdownToSlackMrkdwn(content), false),
-	}
-	if rc.timestamp != "" {
-		opts = append(opts, slack.MsgOptionPostMessageParameters(slack.PostMessageParameters{ThreadTimestamp: rc.timestamp}))
-	}
-
-	_, _, err := p.client.PostMessageContext(ctx, rc.channel, opts...)
+	_, err := p.renderer.postAll(ctx, p.client, rc.channel, rc.timestamp, content)
 	if err != nil {
 		return fmt.Errorf("slack: send: %w", err)
 	}
@@ -518,13 +517,7 @@ func (p *Platform) Send(ctx context.Context, rctx any, content string) error {
 		return fmt.Errorf("slack: invalid reply context type %T", rctx)
 	}
 
-	opts := []slack.MsgOption{
-		slack.MsgOptionText(core.MarkdownToSlackMrkdwn(content), false),
-	}
-	if rc.timestamp != "" {
-		opts = append(opts, slack.MsgOptionPostMessageParameters(slack.PostMessageParameters{ThreadTimestamp: rc.timestamp}))
-	}
-	_, _, err := p.client.PostMessageContext(ctx, rc.channel, opts...)
+	_, err := p.renderer.postAll(ctx, p.client, rc.channel, rc.timestamp, content)
 	if err != nil {
 		return fmt.Errorf("slack: send: %w", err)
 	}
@@ -697,8 +690,11 @@ func (p *Platform) ResolveChannelName(channelID string) (string, error) {
 	return info.Name, nil
 }
 
-// FormattingInstructions returns Slack mrkdwn formatting guidance for the agent.
+// FormattingInstructions matches the agent output to the configured renderer.
 func (p *Platform) FormattingInstructions() string {
+	if p.renderer != nil && p.renderer.mode != "mrkdwn" {
+		return "You are responding in Slack. Use standard Markdown: **bold**, # headings, [label](url), fenced code blocks, and pipe tables with a header separator. Do not use Slack mrkdwn-specific formatting. Keep tables compact and use short paragraphs for readability."
+	}
 	return `You are responding in Slack. Use Slack's mrkdwn format, NOT standard Markdown:
 - Bold: *text* (single asterisks, not double)
 - Italic: _text_

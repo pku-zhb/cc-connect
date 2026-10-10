@@ -1298,6 +1298,8 @@ app_secret = "your-feishu-app-secret"
 # [projects.platforms.options]
 # bot_token = "xoxb-your-bot-token"
 # app_token = "xapp-your-app-level-token"
+# markdown_mode = "auto"  # auto: native Markdown blocks with mrkdwn fallback; native: strict; mrkdwn: legacy
+#                         # auto：优先原生 Markdown，明确拒绝时回退；native：仅原生；mrkdwn：旧格式
 # allow_from = "*"  # Allowed Slack user IDs / 允许的 Slack 用户 ID
 # share_session_in_channel = false  # If true, all users in a channel share one agent session / 频道共享会话
 # session_scope = "user"  # Session granularity: "user" (default, per channel+user) |
