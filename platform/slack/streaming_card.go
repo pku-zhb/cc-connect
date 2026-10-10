@@ -55,7 +55,11 @@ func (p *Platform) CreateStreamingCard(ctx context.Context, rctx any) (core.Stre
 	if !ok {
 		return nil, fmt.Errorf("slack: invalid reply context type %T", rctx)
 	}
-	return &slackStreamingCard{client: p.client, renderer: p.renderer, channel: rc.channel, threadTS: rc.timestamp}, nil
+	card := &slackStreamingCard{client: p.client, renderer: p.renderer, channel: rc.channel, threadTS: rc.timestamp}
+	if p.separateFinal {
+		return &separatedCard{slackStreamingCard: card}, nil
+	}
+	return card, nil
 }
 
 // postFresh posts a brand-new message — the lazy first post for an unseen

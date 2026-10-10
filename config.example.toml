@@ -1298,6 +1298,7 @@ app_secret = "your-feishu-app-secret"
 # [projects.platforms.options]
 # bot_token = "xoxb-your-bot-token"
 # app_token = "xapp-your-app-level-token"
+# separate_final = true  # Keep progress in one editable message; post the final answer separately
 # markdown_mode = "auto"  # auto: native Markdown blocks with mrkdwn fallback; native: strict; mrkdwn: legacy
 #                         # auto：优先原生 Markdown，明确拒绝时回退；native：仅原生；mrkdwn：旧格式
 # allow_from = "*"  # Allowed Slack user IDs / 允许的 Slack 用户 ID

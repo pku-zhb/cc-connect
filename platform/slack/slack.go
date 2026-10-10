@@ -47,6 +47,7 @@ type Platform struct {
 	appToken         string
 	allowFrom        string
 	sessionScope     string // "user" (default) | "channel" | "thread"
+	separateFinal    bool
 	renderer         *messageRenderer
 	client           *slack.Client
 	socket           *socketmode.Client
@@ -76,6 +77,14 @@ func New(opts map[string]any) (core.Platform, error) {
 	if err != nil {
 		return nil, err
 	}
+	separateFinal := true
+	if value, exists := opts["separate_final"]; exists {
+		var ok bool
+		separateFinal, ok = value.(bool)
+		if !ok {
+			return nil, fmt.Errorf("slack: separate_final must be a boolean")
+		}
+	}
 	scope := normalizeSessionScope(opts["session_scope"], shareSessionInChannel)
 	if scope == "thread" {
 		slog.Warn("slack: session_scope=thread gives each Slack thread its own session; " +
@@ -88,6 +97,7 @@ func New(opts map[string]any) (core.Platform, error) {
 		allowFrom:        allowFrom,
 		sessionScope:     scope,
 		renderer:         renderer,
+		separateFinal:    separateFinal,
 		channelNameCache: make(map[string]string),
 	}, nil
 }

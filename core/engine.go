@@ -5232,6 +5232,12 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 	var cardToolCalls []cardToolEntry  // track tool calls for card content
 	var cardThinkingText string        // latest thinking text
 	var cardAnswerText strings.Builder // accumulated answer text
+	var separated separatedProgress
+	defer func() {
+		if card, ok := streamCard.(SeparatedStreamingCard); ok {
+			card.StopProgress(e.ctx, false)
+		}
+	}()
 
 	if scp, ok := state.platform.(StreamingCardPlatform); ok {
 		if sc, err := scp.CreateStreamingCard(e.ctx, state.replyCtx); err != nil {
@@ -5425,6 +5431,19 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			return richCardSupporter.BuildRichCard(status, title, steps, resolveRichCardMarkdown(markdown, !streaming), streaming, statusFooter)
 		}
 
+		if card, ok := streamCard.(SeparatedStreamingCard); ok {
+			handled := separated.observe(event, e.display)
+			if handled || event.Type == EventPermissionRequest {
+				_ = card.UpdateProgress(e.ctx, separated.render())
+			}
+			if handled {
+				if event.Type == EventToolUse {
+					toolCount++
+				}
+				continue
+			}
+		}
+
 		switch event.Type {
 		case EventHookRejected:
 			// Claude Code emits this between a Stop-hook-rejected draft and its
@@ -5501,7 +5520,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				// --- StreamingCard path ---
 				if streamCard != nil && !streamCard.Failed() {
 					cardThinkingText = truncateIf(event.Content, e.display.ThinkingMaxLen)
-					_ = streamCard.Update(e.ctx, buildCardContent(cardThinkingText, cardToolCalls, cardAnswerText.String()))
+					if _, separate := streamCard.(SeparatedStreamingCard); !separate {
+						_ = streamCard.Update(e.ctx, buildCardContent(cardThinkingText, cardToolCalls, cardAnswerText.String()))
+					}
 					continue // skip original independent message sending
 				}
 				// --- Original path (fallback) ---
@@ -5609,7 +5630,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						Name:  event.ToolName,
 						Input: formattedInput,
 					})
-					_ = streamCard.Update(e.ctx, buildCardContent(cardThinkingText, cardToolCalls, cardAnswerText.String()))
+					if _, separate := streamCard.(SeparatedStreamingCard); !separate {
+						_ = streamCard.Update(e.ctx, buildCardContent(cardThinkingText, cardToolCalls, cardAnswerText.String()))
+					}
 					continue // skip original independent message sending
 				}
 				// --- Original path (fallback) ---
@@ -5734,7 +5757,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						} else {
 							cardAnswerText.WriteString(content)
 						}
-						_ = streamCard.Update(e.ctx, buildCardContent(cardThinkingText, cardToolCalls, cardAnswerText.String()))
+						if _, separate := streamCard.(SeparatedStreamingCard); !separate {
+							_ = streamCard.Update(e.ctx, buildCardContent(cardThinkingText, cardToolCalls, cardAnswerText.String()))
+						}
 					}
 					handledByStreamCard = true
 				}
@@ -5867,7 +5892,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 
 			// Flush accumulated text segment before permission prompt
 			previewActive := sp.canPreview()
-			if len(textParts) > segmentStart {
+			if _, separate := streamCard.(SeparatedStreamingCard); !separate && len(textParts) > segmentStart {
 				if !previewActive {
 					segment := strings.Join(textParts[segmentStart:], "")
 					if segment != "" {
@@ -5979,15 +6004,19 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			state.mu.Unlock()
 
 			fullResponse := event.Content
+			_, separateFinal := streamCard.(SeparatedStreamingCard)
+			if separateFinal {
+				fullResponse = separated.answer(event.Content)
+			}
 			if e.display.HideAgentFooter {
 				fullResponse = stripAgentFooterLines(fullResponse)
 			}
 			// When tool progress is hidden, segmentStart stays 0 and textParts
 			// contains ALL text across tool boundaries. Prefer the full accumulated
 			// text over event.Content which only contains the last assistant segment.
-			if len(textParts) > 0 && segmentStart == 0 && !e.display.ToolMessages {
+			if !separateFinal && len(textParts) > 0 && segmentStart == 0 && !e.display.ToolMessages {
 				fullResponse = strings.Join(textParts, "")
-			} else if fullResponse == "" && len(textParts) > 0 {
+			} else if !separateFinal && fullResponse == "" && len(textParts) > 0 {
 				fullResponse = strings.Join(textParts, "")
 			}
 			if fullResponse == "" {
@@ -6185,7 +6214,17 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			replyStart := time.Now()
 
 			// --- StreamingCard path ---
-			if streamCard != nil && !streamCard.Failed() {
+			if card, ok := streamCard.(SeparatedStreamingCard); ok {
+				sp.finish("", "")
+				answer := fullResponse
+				if isSilent {
+					answer = ""
+				}
+				if err := card.FinalizeAnswer(e.ctx, separated.render(), answer); err != nil {
+					slog.Error("separate final delivery failed", "error", err)
+					e.send(p, replyCtx, fmt.Sprintf(e.i18n.T(MsgError), err))
+				}
+			} else if streamCard != nil && !streamCard.Failed() {
 				sp.finish("", "") // cleanup preview (should be no-op if card was active)
 				// Silent reply: never render the NO_REPLY marker into the card.
 				// cardAnswerText holds only the text streamed BEFORE the marker
@@ -6480,6 +6519,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				cardToolCalls = nil
 				cardThinkingText = ""
 				cardAnswerText.Reset()
+				separated = separatedProgress{}
 
 				// Try to create a new streaming card for the queued turn
 				if scp, ok := queued.platform.(StreamingCardPlatform); ok {

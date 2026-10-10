@@ -234,6 +234,26 @@ cc-connect: Here's the project structure...
 
 ---
 
+## Progress and final answers
+
+Slack defaults to `separate_final = true`: thinking and tool activity share one editable progress message; successful final answers are posted as new messages in the same thread. This creates new-message activity for Slack notifications, subject to the recipient's notification settings. Final answer text is buffered and is not rendered in the progress message.
+
+The existing `thinking_messages` and `tool_messages` settings independently control progress visibility. Thinking includes ordinary intermediate prose followed by further reasoning or tools. Tools include both calls and results. With both switches disabled, no progress message is created; the final answer is still posted. `/quiet quiet` remains a preset; `/config set thinking_messages true` and `/config set tool_messages true` can override its visibility defaults independently.
+
+For example, enable both kinds of progress for one project:
+
+```toml
+[projects.display]
+thinking_messages = true
+tool_messages = true
+```
+
+Under that project's Slack platform options, set `separate_final = false` to restore the previous combined-card delivery. Other platforms retain their existing behavior.
+
+Explicit agent result text takes precedence as the final answer. When the result has no body, the trailing text after the last reasoning/tool boundary is used. Existing agent parsing is unchanged. Progress is bounded to recent entries, and updates retain the existing throttling. Long answers can span multiple messages. Silent replies do not post a final answer. Errors and cancellation do not turn partial prose into a successful final answer. A progress-update failure does not cause a complete answer to be resent.
+
+---
+
 ## Response formatting
 
 Slack replies use native [Markdown blocks](https://docs.slack.dev/reference/block-kit/blocks/markdown-block/) by default. Standard Markdown is sent unchanged, including headings, bold text, links, pipe tables, and fenced code. Ordinary Slack `mrkdwn` text does not render pipe tables.

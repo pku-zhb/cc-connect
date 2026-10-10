@@ -2551,3 +2551,91 @@ func TestCUJ_H5_WorkspaceSkillDiscoveryAndInvocation(t *testing.T) {
 	sent := p.getSent()
 	assertWorkspaceSkills(t, sent[len(sent)-1], "b", "a")
 }
+
+// Three successive prompts in one thread must each receive a fresh final
+// answer; tool-boundary prose stays in that turn's shared progress card.
+func TestCUJ_I12_SeparatedProgressAndIndependentFinals(t *testing.T) {
+	for _, thinking := range []bool{false, true} {
+		for _, tools := range []bool{false, true} {
+			t.Run(fmt.Sprintf("thinking=%v/tools=%v", thinking, tools), func(t *testing.T) {
+				p := &cujSeparatedPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+				agent := &cujAgent{}
+				engine := NewEngine("test", agent, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+				engine.SetDisplayConfig(DisplayCfg{Mode: "quiet", ThinkingMessages: thinking, ToolMessages: tools})
+				for turn := 1; turn <= 3; turn++ {
+					final := fmt.Sprintf("Answer %d", turn)
+					events := []Event{{Type: EventText, Content: fmt.Sprintf("Investigating %d", turn)}, {Type: EventToolUse, ToolName: "Search", ToolInput: "query"}, {Type: EventToolResult, ToolName: "Search", ToolResult: "Found"}, {Type: EventText, Content: final}, {Type: EventResult, Done: true}}
+					agent.mu.Lock()
+					if len(agent.sessions) == 0 {
+						agent.nextSessionEvents = events
+					} else {
+						s := agent.sessions[len(agent.sessions)-1]
+						s.mu.Lock()
+						s.pendingEvents = events
+						s.mu.Unlock()
+					}
+					agent.mu.Unlock()
+					engine.ReceiveMessage(p, &Message{SessionKey: "test:thread", Platform: "test", UserID: "U1", MessageID: fmt.Sprintf("m%d", turn), Content: "work", ReplyCtx: "ctx"})
+					deadline := time.Now().Add(3 * time.Second)
+					for time.Now().Before(deadline) {
+						found := false
+						for _, s := range p.getSent() {
+							if s == "FINAL: "+final {
+								found = true
+							}
+						}
+						if found {
+							break
+						}
+						time.Sleep(5 * time.Millisecond)
+					}
+					count := 0
+					for _, s := range p.getSent() {
+						if s == "FINAL: "+final {
+							count++
+						}
+						if strings.HasPrefix(s, "PROGRESS:") && strings.Contains(s, final) {
+							t.Fatalf("final repeated in progress: %q", s)
+						}
+					}
+					if count != 1 {
+						t.Fatalf("final %d delivered %d times: %v", turn, count, p.getSent())
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+				var progress string
+				for _, s := range p.getSent() {
+					if strings.HasPrefix(s, "PROGRESS:") {
+						progress += s
+					}
+				}
+				if strings.Contains(progress, "Investigating") != thinking || strings.Contains(progress, "Search") != tools {
+					t.Fatalf("independent flags violated: %q", progress)
+				}
+			})
+		}
+	}
+}
+
+type cujSeparatedPlatform struct{ stubPlatformEngine }
+
+func (p *cujSeparatedPlatform) CreateStreamingCard(context.Context, any) (StreamingCard, error) {
+	return &cujSeparatedCard{platform: p}, nil
+}
+
+type cujSeparatedCard struct{ platform *cujSeparatedPlatform }
+
+func (c *cujSeparatedCard) Update(context.Context, string) error         { return nil }
+func (c *cujSeparatedCard) Finalize(context.Context, string) error       { return nil }
+func (c *cujSeparatedCard) Failed() bool                                 { return false }
+func (c *cujSeparatedCard) UpdateProgress(context.Context, string) error { return nil }
+func (c *cujSeparatedCard) StopProgress(context.Context, bool)           {}
+func (c *cujSeparatedCard) FinalizeAnswer(ctx context.Context, p, a string) error {
+	if p != "" {
+		_ = c.platform.Send(ctx, "ctx", "PROGRESS: "+p)
+	}
+	if a != "" {
+		return c.platform.Send(ctx, "ctx", "FINAL: "+a)
+	}
+	return nil
+}
