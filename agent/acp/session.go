@@ -165,6 +165,7 @@ func (s *acpSession) handshake(resumeSessionID string, authMethod string) error 
 	initParams := map[string]any{
 		"protocolVersion": 1,
 		"clientCapabilities": map[string]any{
+			"_meta": map[string]any{"muse": map[string]any{"capabilities": []string{"backgroundTurns"}}},
 			"fs": map[string]any{
 				"readTextFile":  false,
 				"writeTextFile": false,
@@ -368,6 +369,12 @@ func (s *acpSession) matchAvailableMode(input string) string {
 func (s *acpSession) onNotification(method string, params json.RawMessage) {
 	if method != "session/update" {
 		slog.Debug("acp: notification", "method", method)
+		return
+	}
+	if events, handled := backgroundTurnCompletion(s.currentACPSessionID(), params); handled {
+		for _, event := range events {
+			s.emit(event)
+		}
 		return
 	}
 	s.cacheToolCallInput(params)
