@@ -183,18 +183,7 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 	p.cancel = cancel
 
 	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case evt := <-p.socket.Events:
-				p.handleEvent(evt)
-			}
-		}
-	}()
-
-	go func() {
-		if err := p.socket.RunContext(ctx); err != nil {
+		if err := runSocketMode(ctx, p.socket.RunContext, p.socket.Events, p.handleEvent); err != nil && ctx.Err() == nil {
 			slog.Error("slack: socket mode error", "error", err)
 		}
 	}()
