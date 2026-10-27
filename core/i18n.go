@@ -231,6 +231,7 @@ const (
 	MsgQuietGlobalOn             MsgKey = "quiet_global_on"
 	MsgQuietGlobalOff            MsgKey = "quiet_global_off"
 	MsgModeChanged               MsgKey = "mode_changed"
+	MsgModeChangeFailed          MsgKey = "mode_change_failed"
 	MsgModeNotSupported          MsgKey = "mode_not_supported"
 	MsgSessionRestarting         MsgKey = "session_restarting"
 	MsgSessionNotStarted         MsgKey = "session_not_started"
@@ -694,7 +695,27 @@ const (
 	MsgAgentRelayToolPrompt MsgKey = "agent_relay_tool_prompt"
 )
 
+const (
+	MsgSessionConfigChanged MsgKey = "session_config_changed"
+)
+
+const MsgAccountUsageUnavailable MsgKey = "account_usage_unavailable"
+
 var messages = map[MsgKey]map[Language]string{
+	MsgAccountUsageUnavailable: {
+		LangEnglish:            "The agent has not provided account quota data.",
+		LangChinese:            "Agent 尚未提供账户额度数据。",
+		LangTraditionalChinese: "Agent 尚未提供帳戶額度資料。",
+		LangJapanese:           "エージェントはアカウント利用枠のデータを提供していません。",
+		LangSpanish:            "El agente no ha proporcionado datos de cuota de cuenta.",
+	},
+	MsgSessionConfigChanged: {
+		LangEnglish:            "%s: `%s`. Applied to this workspace and saved for future sessions.",
+		LangChinese:            "%s 已切换为 `%s`，已对当前工作区生效并保存，后续会话继续使用。",
+		LangTraditionalChinese: "%s 已切換為 `%s`，已對目前工作區生效並儲存，後續會話繼續使用。",
+		LangJapanese:           "%s: `%s`。このワークスペースに適用し、今後のセッション用に保存しました。",
+		LangSpanish:            "%s: `%s`. Aplicado a este espacio de trabajo y guardado para futuras sesiones.",
+	},
 	MsgStarting: {
 		LangEnglish:            "⏳ Processing...",
 		LangChinese:            "⏳ 处理中...",
@@ -971,6 +992,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "🔄 權限模式已切換為 **%s**，新會話將使用此模式。",
 		LangJapanese:           "🔄 権限モードを **%s** に切り替えました。新しいセッションで有効になります。",
 		LangSpanish:            "🔄 Modo de permisos cambiado a **%s**. Las nuevas sesiones usarán este modo.",
+	},
+	MsgModeChangeFailed: {
+		LangEnglish:            "Permission mode change failed: the agent did not confirm the requested mode.",
+		LangChinese:            "权限模式切换失败：Agent 未确认所选模式，尚未保存此次切换。",
+		LangTraditionalChinese: "權限模式切換失敗：Agent 未確認所選模式，尚未儲存此次切換。",
+		LangJapanese:           "権限モードの変更に失敗しました。エージェントが選択を確認していないため保存していません。",
+		LangSpanish:            "No se cambió el modo de permisos: el agente no confirmó el modo solicitado.",
 	},
 	MsgModeNotSupported: {
 		LangEnglish:            "This agent does not support permission mode switching.",

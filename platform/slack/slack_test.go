@@ -1,13 +1,17 @@
 package slack
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	slackapi "github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
 
@@ -348,5 +352,111 @@ func TestDedupKey(t *testing.T) {
 	// the empty string as a duplicate, so such events are never swallowed.
 	if got := dedupKey("C1", ""); got != "" {
 		t.Errorf("dedupKey with empty ts = %q, want empty", got)
+	}
+}
+
+func TestHandleEvent_BotAllowFrom(t *testing.T) {
+	for _, source := range []string{"message", "app_mention"} {
+		for _, tc := range []struct {
+			name, allow, user, bot string
+			want                   bool
+		}{
+			{"default excludes bots", "", "U1", "B1", false},
+			{"wildcard excludes bots", "*", "U1", "B1", false},
+			{"human identity cannot bypass bot check", "U1", "U1", "B1", false},
+			{"explicit bot", "U2,B1", "U1", "B1", true},
+			{"bot without user", "B1", "", "B1", true},
+			{"case insensitive", " b1 ", "U1", "B1", true},
+			{"unknown bot", "*,B2", "U1", "B1", false},
+			{"own bot", "BSELF", "USELF", "BSELF", false},
+			{"own user", "*", "USELF", "", false},
+			{"human with mixed wildcard", "*,B1", "U1", "", true},
+			{"unauthorized human", "B1", "U1", "", false},
+			{"missing sender", "*", "", "", false},
+		} {
+			t.Run(source+"/"+tc.name, func(t *testing.T) {
+				p, got := newDedupTestPlatform(t)
+				p.allowFrom, p.selfBotID, p.selfUserID = tc.allow, "BSELF", "USELF"
+				evt := messageEvent("C1", tc.user, freshTS(1), "ping")
+				if source == "app_mention" {
+					evt = mentionEvent("C1", tc.user, freshTS(1), "ping")
+				}
+				data := evt.Data.(slackevents.EventsAPIEvent)
+				switch ev := data.InnerEvent.Data.(type) {
+				case *slackevents.MessageEvent:
+					ev.BotID = tc.bot
+				case *slackevents.AppMentionEvent:
+					ev.BotID = tc.bot
+				}
+				p.handleEvent(evt)
+				if (len(*got) == 1) != tc.want {
+					t.Fatalf("dispatched %d messages, want allowed=%v", len(*got), tc.want)
+				}
+				if tc.want && tc.user == "" && (*got)[0].UserID != tc.bot {
+					t.Fatal("bot sender identity was lost")
+				}
+			})
+		}
+	}
+}
+
+func TestAllowSender_LogsIgnoredBotWithoutBody(t *testing.T) {
+	var buf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	p := &Platform{allowFrom: "*"}
+	if p.allowSender("U1", "B1", "message", "C1", "123.456") {
+		t.Fatal("unexpectedly allowed bot")
+	}
+	for _, field := range []string{`"reason":"bot_not_allowlisted"`, `"bot_id":"B1"`, `"user":"U1"`, `"channel":"C1"`, `"ts":"123.456"`} {
+		if !strings.Contains(buf.String(), field) {
+			t.Errorf("missing %s in log: %s", field, buf.String())
+		}
+	}
+}
+
+func TestAcceptedReceiptBeforeAgentStartup(t *testing.T) {
+	for _, mention := range []bool{false, true} {
+		t.Run(fmt.Sprintf("mention=%v", mention), func(t *testing.T) {
+			calls := make(chan string, 2)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = r.ParseForm()
+				calls <- r.URL.Path + ":" + r.Form.Get("channel") + ":" + r.Form.Get("timestamp") + ":" + r.Form.Get("name")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"ok":true}`))
+			}))
+			defer server.Close()
+			p, messages := newDedupTestPlatform(t)
+			p.client = slackapi.New("test", slackapi.OptionAPIURL(server.URL+"/"))
+			ts := freshTS(101)
+			event := messageEvent("C1", "U1", ts, "hello")
+			if mention {
+				event = mentionEvent("C1", "U1", ts, "<@UBOT> hello")
+			}
+			p.handleEvent(event)
+			if len(*messages) != 1 || (*messages)[0].OnAccepted == nil {
+				t.Fatal("missing pre-start receipt callback")
+			}
+			select {
+			case <-calls:
+				t.Fatal("receipt sent before acceptance")
+			default:
+			}
+			// Startup may now block indefinitely; acceptance must still react.
+			(*messages)[0].OnAccepted()
+			select {
+			case got := <-calls:
+				if want := "/reactions.add:C1:" + ts + ":eyes"; got != want {
+					t.Fatalf("receipt=%q want=%q", got, want)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("no receipt before startup")
+			}
+			p.handleEvent(event)
+			if len(*messages) != 1 {
+				t.Fatal("duplicate delivered twice")
+			}
+		})
 	}
 }

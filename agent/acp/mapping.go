@@ -34,6 +34,19 @@ func mapSessionUpdate(sessionID string, params json.RawMessage) []core.Event {
 	switch head.SessionUpdate {
 	case "agent_message_chunk":
 		return mapAgentMessageChunk(sid, wrap.Update)
+	case "agent_thought_chunk":
+		// ACP thought chunks are deltas, not answer text or complete summaries.
+		// Keep their identity so progress renderers can join token-sized chunks.
+		events := mapAgentMessageChunk(sid, wrap.Update)
+		var thought struct {
+			MessageID string `json:"messageId"`
+		}
+		_ = json.Unmarshal(wrap.Update, &thought)
+		for i := range events {
+			events[i].Type = core.EventThinking
+			events[i].Metadata = map[string]any{"thinking_delta": true, "thinking_id": thought.MessageID}
+		}
+		return events
 	case "tool_call":
 		return mapToolCall(sid, wrap.Update)
 	case "tool_call_update":

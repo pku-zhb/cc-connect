@@ -109,3 +109,67 @@ func TestSeparatedProgress_EmptyPendingTextDoesNotCreateThinkingEmoji(t *testing
 		t.Fatalf("empty thinking entries leaked: %q", progress.render())
 	}
 }
+
+func TestSeparatedProgress_MuseThoughtDeltasContinueWithoutPollutingFinal(t *testing.T) {
+	for _, visible := range []bool{true, false} {
+		var s separatedProgress
+		display := DisplayCfg{ThinkingMessages: visible}
+		for _, text := range []string{"Quantifying", " ", "per-core bandwidth.", "\n\n", "核对延迟。"} {
+			s.observe(Event{Type: EventThinking, Content: text, Metadata: map[string]any{"thinking_delta": true, "thinking_id": "thought-1"}}, display)
+		}
+		s.observe(Event{Type: EventText, Content: "先给一个结论。"}, display)
+		if s.answer("") != "先给一个结论。" {
+			t.Fatalf("final contaminated: %q", s.answer(""))
+		}
+		want := ""
+		if visible {
+			want = "💭 Quantifying per-core bandwidth.\n\n💭 核对延迟。"
+		}
+		if got := s.render(); got != want {
+			t.Fatalf("visible=%v progress=%q want=%q", visible, got, want)
+		}
+	}
+}
+
+func TestSeparatedProgress_ThoughtDeltaBoundariesPreserveOtherAgents(t *testing.T) {
+	var s separatedProgress
+	display := DisplayCfg{ThinkingMessages: true}
+	thought := func(id, text string) Event {
+		return Event{Type: EventThinking, Content: text, Metadata: map[string]any{"thinking_delta": true, "thinking_id": id}}
+	}
+	for _, event := range []Event{
+		thought("one", "First"), thought("one", " thought."),
+		thought("two", "Second thought."),
+		{Type: EventToolUse, ToolName: "Search"},
+		thought("", "After tool."),
+		{Type: EventThinking, Content: "Codex or OpenCode summary."},
+		{Type: EventText, Content: "Final answer."},
+	} {
+		s.observe(event, display)
+	}
+	want := "💭 First thought.\n\n💭 Second thought.\n\n💭 After tool.\n\n💭 Codex or OpenCode summary."
+	if s.render() != want || s.answer("") != "Final answer." {
+		t.Fatalf("progress=%q final=%q", s.render(), s.answer(""))
+	}
+}
+
+func TestSeparatedProgress_ThoughtParagraphEmojiIsIndependentOfChunkBoundaries(t *testing.T) {
+	for _, parts := range [][]string{
+		{"First summary.\n\nSecond summary."},
+		{"First", " summary.", "\n\nSecond", " summary."},
+		{"First summary.", "\n", "\n", "Second summary."},
+		{"First summary.", "\n\n", "Second summary.", "\n\n"},
+	} {
+		var s separatedProgress
+		for _, part := range parts {
+			s.observe(Event{Type: EventThinking, Content: part, Metadata: map[string]any{"thinking_delta": true}}, DisplayCfg{ThinkingMessages: true})
+		}
+		want := "💭 First summary.\n\n💭 Second summary."
+		if got := strings.TrimRight(s.render(), "\n"); got != want {
+			t.Fatalf("chunks=%q progress=%q want=%q", parts, got, want)
+		}
+		if strings.Count(s.render(), "💭") != 2 {
+			t.Fatalf("empty or duplicate marker for chunks=%q: %q", parts, s.render())
+		}
+	}
+}

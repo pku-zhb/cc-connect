@@ -28,6 +28,7 @@ type replyContext struct {
 	channel   string
 	timestamp string // thread_ts for threading replies
 	msgTS     string // ts of the message that triggered this turn (reaction target)
+	receipt   *messageReceipt
 }
 
 // reactionTS returns the timestamp reactions should target: the triggering
@@ -46,6 +47,8 @@ type Platform struct {
 	botToken         string
 	appToken         string
 	allowFrom        string
+	selfBotID        string
+	selfUserID       string
 	sessionScope     string // "user" (default) | "channel" | "thread"
 	separateFinal    bool
 	renderer         *messageRenderer
@@ -177,6 +180,11 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 	p.client = slack.New(p.botToken,
 		slack.OptionAppLevelToken(p.appToken),
 	)
+	auth, err := p.client.AuthTest()
+	if err != nil {
+		return fmt.Errorf("slack: identify own bot: %w", err)
+	}
+	p.selfBotID, p.selfUserID = auth.BotID, auth.UserID
 	p.socket = socketmode.New(p.client)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -190,6 +198,46 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 
 	slog.Info("slack: socket mode connected")
 	return nil
+}
+
+// allowHuman keeps wildcard entries usable alongside explicit bot IDs.
+func (p *Platform) allowHuman(user string) bool {
+	if core.AllowList(p.allowFrom, user) {
+		return true
+	}
+	for _, id := range strings.Split(p.allowFrom, ",") {
+		if strings.TrimSpace(id) == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+// allowSender requires an explicit bot ID even when all human users are allowed.
+// Never accept our own output, including when its ID was accidentally allowlisted.
+func (p *Platform) allowSender(user, bot, source, channel, ts string) bool {
+	reason := ""
+	switch {
+	case (bot != "" && bot == p.selfBotID) || (user != "" && user == p.selfUserID):
+		reason = "self_message"
+	case bot != "":
+		for _, id := range strings.Split(p.allowFrom, ",") {
+			if strings.EqualFold(strings.TrimSpace(id), bot) {
+				slog.Info("slack: bot message allowed", "source", source, "channel", channel, "ts", ts, "user", user, "bot_id", bot)
+				return true
+			}
+		}
+		reason = "bot_not_allowlisted"
+	case user == "":
+		reason = "missing_sender"
+	default:
+		if p.allowHuman(user) {
+			return true
+		}
+		reason = "user_not_allowlisted"
+	}
+	slog.Info("slack: message ignored", "reason", reason, "source", source, "channel", channel, "ts", ts, "user", user, "bot_id", bot)
+	return false
 }
 
 func (p *Platform) handleEvent(evt socketmode.Event) {
@@ -209,8 +257,11 @@ func (p *Platform) handleEvent(evt socketmode.Event) {
 		if data.Type == slackevents.CallbackEvent {
 			switch ev := data.InnerEvent.Data.(type) {
 			case *slackevents.AppMentionEvent:
-				if ev.BotID != "" || ev.User == "" {
+				if !p.allowSender(ev.User, ev.BotID, "app_mention", ev.Channel, ev.TimeStamp) {
 					return
+				}
+				if ev.User == "" {
+					ev.User = ev.BotID
 				}
 
 				if ts := ev.TimeStamp; ts != "" {
@@ -225,11 +276,6 @@ func (p *Platform) handleEvent(evt socketmode.Event) {
 				}
 
 				slog.Debug("slack: app_mention received", "user", ev.User, "channel", ev.Channel)
-
-				if !core.AllowList(p.allowFrom, ev.User) {
-					slog.Debug("slack: app_mention from unauthorized user", "user", ev.User)
-					return
-				}
 
 				if p.dedup.IsDuplicate(dedupKey(ev.Channel, ev.TimeStamp)) {
 					slog.Debug("slack: duplicate message ignored", "source", "app_mention",
@@ -260,6 +306,7 @@ func (p *Platform) handleEvent(evt socketmode.Event) {
 					MessageID: ev.TimeStamp,
 					ReplyCtx:  replyContext{channel: ev.Channel, timestamp: threadTS, msgTS: ev.TimeStamp},
 				}
+				p.attachReceipt(msg)
 				p.handler(p, msg)
 
 			case *slackevents.AssistantThreadStartedEvent:
@@ -277,8 +324,11 @@ func (p *Platform) handleEvent(evt socketmode.Event) {
 				})
 
 			case *slackevents.MessageEvent:
-				if ev.BotID != "" || ev.User == "" {
+				if !p.allowSender(ev.User, ev.BotID, "message", ev.Channel, ev.TimeStamp) {
 					return
+				}
+				if ev.User == "" {
+					ev.User = ev.BotID
 				}
 
 				if ts := ev.TimeStamp; ts != "" {
@@ -293,11 +343,6 @@ func (p *Platform) handleEvent(evt socketmode.Event) {
 				}
 
 				slog.Debug("slack: message received", "user", ev.User, "channel", ev.Channel)
-
-				if !core.AllowList(p.allowFrom, ev.User) {
-					slog.Debug("slack: message from unauthorized user", "user", ev.User)
-					return
-				}
 
 				if p.dedup.IsDuplicate(dedupKey(ev.Channel, ev.TimeStamp)) {
 					slog.Debug("slack: duplicate message ignored", "source", "message",
@@ -327,6 +372,7 @@ func (p *Platform) handleEvent(evt socketmode.Event) {
 					MessageID: ts,
 					ReplyCtx:  replyContext{channel: ev.Channel, timestamp: threadTS, msgTS: ts},
 				}
+				p.attachReceipt(msg)
 				p.handler(p, msg)
 			}
 		}
@@ -341,7 +387,7 @@ func (p *Platform) handleEvent(evt socketmode.Event) {
 			p.socket.Ack(*evt.Request)
 		}
 
-		if !core.AllowList(p.allowFrom, cmd.UserID) {
+		if !p.allowHuman(cmd.UserID) {
 			slog.Debug("slack: slash command from unauthorized user", "user", cmd.UserID)
 			return
 		}
@@ -372,6 +418,18 @@ func (p *Platform) handleEvent(evt socketmode.Event) {
 	case socketmode.EventTypeConnectionError:
 		slog.Error("slack: connection error")
 	}
+}
+
+// attachReceipt acknowledges accepted agent input before slow agent startup.
+// Commands and rejected/duplicate messages never invoke OnAccepted in core.
+func (p *Platform) attachReceipt(msg *core.Message) {
+	rc, ok := msg.ReplyCtx.(replyContext)
+	if !ok || rc.channel == "" || rc.reactionTS() == "" {
+		return
+	}
+	rc.receipt = &messageReceipt{client: p.client, ref: slack.ItemRef{Channel: rc.channel, Timestamp: rc.reactionTS()}}
+	msg.ReplyCtx = rc
+	msg.OnAccepted = func() { go rc.receipt.acknowledge() }
 }
 
 func stripAppMentionText(text string) string {
@@ -640,6 +698,9 @@ func (p *Platform) ReconstructReplyCtx(sessionKey string) (any, error) {
 }
 
 func (p *Platform) resolveUserName(userID string) string {
+	if strings.HasPrefix(userID, "B") {
+		return userID
+	}
 	if cached, ok := p.userNameCache.Load(userID); ok {
 		return cached.(string)
 	}
@@ -722,11 +783,16 @@ func (p *Platform) StartTyping(ctx context.Context, rctx any) (stop func()) {
 	}
 
 	ref := slack.ItemRef{Channel: rc.channel, Timestamp: rc.reactionTS()}
+	receipt := rc.receipt
+	if receipt == nil {
+		receipt = &messageReceipt{client: p.client, ref: ref}
+	}
+
 	var mu sync.Mutex
 	var added []string
 
 	addReaction := func(emoji string) {
-		if err := p.client.AddReaction(emoji, ref); err != nil {
+		if err := p.client.AddReaction(emoji, ref); err != nil && err.Error() != "already_reacted" {
 			slog.Debug("slack: add reaction failed", "emoji", emoji, "error", err)
 			return
 		}
@@ -736,7 +802,7 @@ func (p *Platform) StartTyping(ctx context.Context, rctx any) (stop func()) {
 	}
 
 	// Immediately add eyes
-	addReaction("eyes")
+	receipt.acknowledge()
 
 	extras := []string{
 		"hourglass_flowing_sand", "hourglass", "gear", "hammer_and_wrench",
@@ -777,18 +843,22 @@ func (p *Platform) StartTyping(ctx context.Context, rctx any) (stop func()) {
 		}
 	}()
 
+	var stopOnce sync.Once
 	return func() {
-		close(done)
-		wg.Wait()
-		mu.Lock()
-		emojis := make([]string, len(added))
-		copy(emojis, added)
-		mu.Unlock()
-		for _, emoji := range emojis {
-			if err := p.client.RemoveReaction(emoji, ref); err != nil {
-				slog.Debug("slack: remove reaction failed", "emoji", emoji, "error", err)
+		stopOnce.Do(func() {
+			close(done)
+			wg.Wait()
+			receipt.finish()
+			mu.Lock()
+			emojis := make([]string, len(added))
+			copy(emojis, added)
+			mu.Unlock()
+			for _, emoji := range emojis {
+				if err := p.client.RemoveReaction(emoji, ref); err != nil {
+					slog.Debug("slack: remove reaction failed", "emoji", emoji, "error", err)
+				}
 			}
-		}
+		})
 	}
 }
 

@@ -1301,7 +1301,10 @@ app_secret = "your-feishu-app-secret"
 # separate_final = true  # Keep progress in one editable message; post the final answer separately
 # markdown_mode = "auto"  # auto: native Markdown blocks with mrkdwn fallback; native: strict; mrkdwn: legacy
 #                         # auto：优先原生 Markdown，明确拒绝时回退；native：仅原生；mrkdwn：旧格式
-# allow_from = "*"  # Allowed Slack user IDs / 允许的 Slack 用户 ID
+# allow_from = "*"  # Human user IDs; explicit B... bot IDs also supported / 用户 ID，也支持明确列出的 bot ID
+# allow_from = "U123,B456"  # Only this human and bot / 仅此用户和 bot
+# allow_from = "*,B456"     # All humans plus this bot; * alone excludes bots / 所有用户及此 bot
+# Own bot messages are always ignored. / 始终忽略本应用自身消息。
 # share_session_in_channel = false  # If true, all users in a channel share one agent session / 频道共享会话
 # session_scope = "user"  # Session granularity: "user" (default, per channel+user) |
 #                         # "channel" (one session per channel, same as share_session_in_channel) |

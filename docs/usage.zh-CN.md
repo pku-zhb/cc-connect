@@ -39,13 +39,13 @@ cc-connect 完整功能使用指南。
 | `/switch <id>` | 切换到指定会话 |
 | `/current` | 查看当前会话 |
 | `/history [n]` | 查看最近 n 条消息；单条长度受 `[display].history_max_len` 控制，默认 1000 |
-| `/usage` | 查看账号/模型限额使用情况 |
+| `/usage` | 查看账号/模型限额使用情况|
 | `/provider [...]` | 管理 API Provider |
 | `/model [switch <alias>]` | 列出可用模型或按别名切换 |
 | `/dir [路径]` | 查看或切换 Agent 工作目录 |
 | `/show <引用>` | 按引用查看文件、目录或代码片段 |
 | `/allow <工具名>` | 预授权工具 |
-| `/reasoning [等级]` | 查看或切换推理强度（Codex）|
+| `/reasoning [等级]` | 查看或切换推理强度（视 Agent 支持情况）|
 | `/mode [名称]` | 查看或切换权限模式 |
 | `/stop` | 停止当前执行 |
 | `/help` | 显示可用命令 |
@@ -64,11 +64,21 @@ reset_on_idle_mins = 60
 
 ### 切换模型时保留历史
 
-`/model` 切换模型时保留当前会话——agent 会在新模型下继续对话（不额外消耗 token）。注意模型切换作用于共享的 agent 实例——如果多个平台使用同一个 project，模型变更会影响所有平台。
+`/model` 切换时保留当前对话。在多工作区模式下，模型选择按工作区隔离并保存；所有支持推理强度控制的 Agent，其手动 `/reasoning` 选择也会按工作区保存并在重启后恢复。没有独立设置的工作区继续使用项目默认值。绑定同一工作区的多个频道共享设置。
+
+ACP Agent 通过标准 `configOptions` 提供模型和推理强度选项。cc-connect 使用 Agent 实际公布的值，通过 `session/set_config_option` 在当前会话生效，保留对话历史；支持分组列表与 `config_option_update` 更新。新建或恢复会话时会重新应用保存的工作区设置。可在 ACP Agent 配置中填写 `model` 和 `reasoning_effort`，明确项目默认值，避免依赖上游 Agent 的隐式默认值。
+
+`/usage` 始终用于账户额度，展示额度周期、剩余比例和重置时间。ACP 的 `usage_update.used`/`size` 是上下文占用，单独用于状态或回复页脚。Muse ACP 扩展 `_meta.museSubscriptionUsage` 中的账户额度会映射到既有额度展示，并标明观测时间。缺少账户数据时明确提示不可用，不以 context 或成本替代额度。配置和额度更新不会进入对话正文。
 
 ---
 
 ## 权限模式
+
+`/yolo` 是 `/mode yolo` 的快捷写法，遵循相同的命令访问限制。
+ACP Agent 提供 `approval_mode` 选项时，`/mode` 控制审批策略，独立于
+Plan/Read-only 等会话行为模式；yolo 映射到 Agent 实际公布的 `allowAll`。
+只有 Agent 确认后才会显示切换成功。已确认的全部允许策略也适用于主回复
+结束后的后台工具审批；需要用户回答的问题不会被自动作答。
 
 所有 Agent 支持运行时切换权限模式，通过 `/mode` 命令。
 

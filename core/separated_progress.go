@@ -18,8 +18,11 @@ type SeparatedStreamingCard interface {
 }
 
 type separatedProgress struct {
-	pending strings.Builder
-	entries []string
+	pending       strings.Builder
+	entries       []string
+	thinkingDelta bool
+	thinkingID    string
+	thinkingText  string
 }
 
 func (s *separatedProgress) append(text string) {
@@ -38,14 +41,35 @@ func (s *separatedProgress) promote(show bool) {
 	}
 	s.pending.Reset()
 }
+
+// Summary parts arrive separated by blank lines, sometimes across ACP chunks.
+// Render markers from the accumulated raw text so chunk boundaries cannot add
+// duplicate markers or leave a later summary without its thinking marker.
+func renderThoughtParagraphs(text string) string {
+	parts := strings.Split(text, "\n\n")
+	for i, part := range parts {
+		if strings.TrimSpace(part) != "" {
+			parts[i] = "💭 " + part
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
 func (s *separatedProgress) observe(event Event, display DisplayCfg) bool {
+	if event.Type != EventThinking {
+		s.thinkingDelta = false
+	}
 	switch event.Type {
 	case EventHookRejected:
 		s.pending.Reset()
 	case EventText:
 		s.pending.WriteString(event.Content)
 	case EventThinking:
-		if strings.TrimSpace(event.Content) == "" || isEllipsisOnly(event.Content) {
+		delta, _ := event.Metadata["thinking_delta"].(bool)
+		id, _ := event.Metadata["thinking_id"].(string)
+		continuation := delta && s.thinkingDelta && id == s.thinkingID && len(s.entries) > 0
+		// Whitespace can separate words or paragraphs in a thought delta.
+		if (!continuation && strings.TrimSpace(event.Content) == "") || event.Content == "" || (!delta && isEllipsisOnly(event.Content)) {
 			return true
 		}
 		s.promote(display.ThinkingMessages)
@@ -54,8 +78,28 @@ func (s *separatedProgress) observe(event Event, display DisplayCfg) bool {
 			if display.ThinkingMaxLen > 0 && display.ThinkingMaxLen < limit {
 				limit = display.ThinkingMaxLen
 			}
-			s.append("💭 " + truncateIf(event.Content, limit))
+			text := truncateIf(event.Content, limit)
+			if delta {
+				if continuation {
+					text = s.thinkingText + text
+				}
+				s.thinkingText = truncateIf(text, 4000)
+				text = renderThoughtParagraphs(s.thinkingText)
+			} else {
+				text = "💭 " + text
+			}
+			if continuation {
+				last := len(s.entries) - 1
+				s.entries[last] = truncateIf(text, 4000)
+				for len(s.entries) > 1 && utf8.RuneCountInString(s.render()) > 8000 {
+					s.entries = s.entries[1:]
+				}
+			} else {
+				s.append(text)
+			}
 		}
+		s.thinkingDelta = delta && display.ThinkingMessages
+		s.thinkingID = id
 		return true
 	case EventToolUse:
 		s.promote(display.ThinkingMessages)

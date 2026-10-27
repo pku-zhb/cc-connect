@@ -43,7 +43,7 @@ Each user gets an independent session with full conversation context. Manage ses
 | `/model [switch <alias>]` | List available models or switch by alias |
 | `/dir [path]` | Show or switch the agent work directory |
 | `/allow <tool>` | Pre-allow a tool (next session) |
-| `/reasoning [level]` | View or switch reasoning effort (Codex) |
+| `/reasoning [level]` | View or switch reasoning effort (if supported) |
 | `/mode [name]` | View or switch permission mode |
 | `/stop` | Stop current execution |
 | `/help` | Show available commands |
@@ -66,11 +66,23 @@ To restore the previous behavior of always continuing, set `reset_on_idle_mins =
 
 ### Model switch preserves history
 
-`/model` preserves the current session — the agent resumes the conversation with the new model (no extra token cost). Model switching affects the shared agent instance — if multiple platforms use the same project, the model change applies to all of them.
+`/model` preserves the current conversation. In multi-workspace mode, model selections are isolated and saved per workspace. Explicit `/reasoning` selections are also saved per workspace for every agent that supports reasoning controls; entries without an override continue to use the project default. Workspaces bound to several channels share the same settings.
+
+ACP agents advertise model and reasoning selectors through standard `configOptions`. cc-connect uses their advertised values and `session/set_config_option`, handles grouped options and `config_option_update`, and applies changes to the live session without erasing history. Saved workspace defaults are applied again to new and resumed sessions. Configure `model` and `reasoning_effort` in the ACP agent options when you want explicit project defaults rather than defaults chosen by the upstream agent.
+
+`/usage` always displays account quota windows, remaining percentages and reset times. ACP context occupancy (`usage_update.used`/`size`) is separate and remains available to status/footer reporting. The Muse ACP extension `_meta.museSubscriptionUsage` is decoded as a provider observation and mapped into the existing account-quota format, including its observation timestamp. Missing account data is reported as unavailable; context and cost are never substituted for quota. These updates never become conversation text.
 
 ---
 
 ## Permission Modes
+
+`/yolo` is a shortcut for `/mode yolo` and follows the same command access rules.
+For ACP agents with an `approval_mode` selector, `/mode` changes that approval
+policy rather than the separate Plan/Read-only session behavior. The `yolo`
+alias resolves to an advertised `allowAll` value. A live change is acknowledged
+only after the agent confirms it. That effective full-approval policy also
+applies to tool approvals from background tasks after the foreground reply;
+questions requiring user input are never answered automatically.
 
 All agents support permission modes switchable at runtime via `/mode`.
 

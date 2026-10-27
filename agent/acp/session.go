@@ -52,6 +52,14 @@ type acpSession struct {
 	availableModes []acpModeInfo
 	currentMode    string
 
+	controlsMu        sync.RWMutex
+	configWriteMu     sync.Mutex
+	configOptions     []core.SessionConfigOption
+	sessionUsage      *core.SessionUsage
+	accountUsage      *core.UsageReport
+	accountUsageReady chan struct{}
+	accountUsageOnce  sync.Once
+
 	callbacks sessionCallbacks // may be nil (tests, integration harness)
 }
 
@@ -71,6 +79,8 @@ type acpSessionConfig struct {
 	workDir         string
 	resumeSessionID string
 	authMethod      string
+	initialModel    string
+	initialEffort   string
 	initialMode     string           // if non-empty, applied via session/set_mode after session/new
 	callbacks       sessionCallbacks // may be nil
 }
@@ -83,14 +93,15 @@ func newACPSession(ctx context.Context, cfg acpSessionConfig) (*acpSession, erro
 
 	sessionCtx, cancel := context.WithCancel(ctx)
 	s := &acpSession{
-		workDir:       absWorkDir,
-		events:        make(chan core.Event, 128),
-		ctx:           sessionCtx,
-		cancel:        cancel,
-		permByID:      make(map[string]permState),
-		toolInputByID: make(map[string]string),
-		acpSessID:     cfg.resumeSessionID,
-		callbacks:     cfg.callbacks,
+		workDir:           absWorkDir,
+		events:            make(chan core.Event, 128),
+		ctx:               sessionCtx,
+		cancel:            cancel,
+		permByID:          make(map[string]permState),
+		toolInputByID:     make(map[string]string),
+		acpSessID:         cfg.resumeSessionID,
+		accountUsageReady: make(chan struct{}),
+		callbacks:         cfg.callbacks,
 	}
 	s.alive.Store(true)
 
@@ -141,17 +152,18 @@ func newACPSession(ctx context.Context, cfg acpSessionConfig) (*acpSession, erro
 		return nil, err
 	}
 
+	if err := s.applyInitialConfig(cfg.initialModel, cfg.initialEffort); err != nil {
+		_ = s.Close()
+		return nil, fmt.Errorf("acp: apply workspace configuration: %w", err)
+	}
+
 	// Apply the agent-level mode preference now that we have a session
-	// id. If set_mode fails (e.g. modeId unknown to this backend) we
-	// log and carry on with whatever mode the server defaulted to —
-	// the alternative would be to reject the session entirely, which
-	// is worse UX for a non-critical control.
+	// id. A rejected requested policy must fail startup instead of silently
+	// running under a different approval policy.
 	if strings.TrimSpace(cfg.initialMode) != "" {
 		if ok := s.SetLiveMode(cfg.initialMode); !ok {
-			slog.Warn("acp: initial mode could not be applied",
-				"mode", cfg.initialMode,
-				"session_id", s.currentACPSessionID(),
-			)
+			_ = s.Close()
+			return nil, fmt.Errorf("acp: requested permission mode %q could not be applied", cfg.initialMode)
 		}
 	}
 
@@ -223,6 +235,9 @@ func (s *acpSession) handshake(resumeSessionID string, authMethod string) error 
 			if json.Unmarshal(loadRes, &lr) == nil && lr.SessionID != "" {
 				s.setACPSessionID(lr.SessionID)
 				s.absorbModes(lr.Modes)
+				if err := s.absorbConfigJSON(loadRes); err != nil {
+					return err
+				}
 				return nil
 			}
 		}
@@ -248,7 +263,7 @@ func (s *acpSession) handshake(resumeSessionID string, authMethod string) error 
 	}
 	s.setACPSessionID(sn.SessionID)
 	s.absorbModes(sn.Modes)
-	return nil
+	return s.absorbConfigJSON(newRes)
 }
 
 // absorbModes copies a modes block into the session's cache and fans
@@ -302,6 +317,20 @@ func (s *acpSession) CurrentMode() string {
 // (devin acp in 2026.4.9) silently accepts unknown modeIds without
 // any error, so a server-only check would let typos go undetected.
 func (s *acpSession) SetLiveMode(mode string) bool {
+	option := s.configForCategory("approval_mode")
+	if option == nil {
+		option = s.configForCategory("mode")
+	}
+	if option != nil {
+		for _, v := range option.Options {
+			if strings.EqualFold(v.Value, mode) || strings.EqualFold(v.Name, mode) ||
+				(strings.EqualFold(mode, "yolo") && v.Value == "allowAll") {
+				return s.SetConfigOption(s.ctx, option.ID, v.Value) == nil
+			}
+		}
+		return false
+	}
+
 	if !s.alive.Load() {
 		return false
 	}
@@ -375,6 +404,16 @@ func (s *acpSession) onNotification(method string, params json.RawMessage) {
 		for _, event := range events {
 			s.emit(event)
 		}
+		return
+	}
+	var usageWrap struct {
+		SessionID string          `json:"sessionId"`
+		Update    json.RawMessage `json:"update"`
+	}
+	if json.Unmarshal(params, &usageWrap) == nil && (usageWrap.SessionID == "" || s.currentACPSessionID() == "" || usageWrap.SessionID == s.currentACPSessionID()) {
+		s.absorbAccountUsage(usageWrap.Update)
+	}
+	if s.absorbControlUpdate(params) {
 		return
 	}
 	s.cacheToolCallInput(params)

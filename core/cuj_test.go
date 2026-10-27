@@ -1270,6 +1270,7 @@ func TestCUJ_A5_FileReachesAgent(t *testing.T) {
 	agent := &cujAgent{}
 	dir := t.TempDir()
 	e := NewEngine("test", agent, []Platform{plat}, dir+"/sessions.json", LangEnglish)
+	defer e.Stop()
 
 	msg := &Message{
 		SessionKey: "test:file", Platform: "test", MessageID: "f1",
@@ -1285,7 +1286,9 @@ func TestCUJ_A5_FileReachesAgent(t *testing.T) {
 		agent.mu.Lock()
 		n := len(agent.sessions)
 		agent.mu.Unlock()
-		if n > 0 {
+		// Wait for the completed user-visible turn before TempDir cleanup;
+		// merely spawning the agent races its asynchronous session saves.
+		if n > 0 && len(plat.getSent()) > 0 && !e.sessions.GetOrCreateActive("test:file").Busy() {
 			return
 		}
 		select {
@@ -1498,6 +1501,7 @@ func TestCUJ_B11_PrivateVsGroupSessionsIsolated(t *testing.T) {
 // Mode-switching is a per-agent contract; here we assert the engine respects
 // SetLiveMode("bypassPermissions") on the agent session.
 func TestCUJ_C1_YoloModeSkipsPermission(t *testing.T) {
+	t.Run("confirmed ACP policy includes background child tools", testPolicyYoloForegroundAndBackground)
 	t.Log("CUJ-C1: full coverage via release-gate TestCC_AGENT_01_yolo (integration); " +
 		"core unit-test path: yolo mode is enforced inside Agent.StartSession, not Engine")
 }
@@ -1527,6 +1531,7 @@ func TestCUJ_C5_StopKeepsSameSession(t *testing.T) {
 
 // CUJ-C6 · /mode switches permission mode; verified via i18n reply text.
 func TestCUJ_C6_ModeSwitchAcknowledged(t *testing.T) {
+	t.Run("ACP rejects false success and resolves pending approvals", testPolicyModeFailureAndPendingApproval)
 	env := newCUJEnv(t)
 	env.userSends("c6", "hi")
 	env.waitFor("turn1", 2*time.Second, func() bool { return len(env.plat.getSent()) >= 1 })
@@ -2638,4 +2643,34 @@ func (c *cujSeparatedCard) FinalizeAnswer(ctx context.Context, p, a string) erro
 		return c.platform.Send(ctx, "ctx", "FINAL: "+a)
 	}
 	return nil
+}
+
+// Regression: cancelling accepted queued input must remove its early receipt
+// even though it never reaches StartTyping or an agent turn.
+func TestCUJ_A10_ReceiptCleanupAfterQueueCancellation(t *testing.T) {
+	env, agent, p := newLifecycleReceiptEnv(t, nil)
+	// Action 1: submit a task while native startup is held.
+	sendLifecycleMessage(env.engine, p, "first", "first task")
+	select {
+	case <-agent.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup did not begin")
+	}
+	close(agent.release)
+	env.waitFor("first task sent", 2*time.Second, func() bool {
+		agent.session.sendMu.Lock()
+		defer agent.session.sendMu.Unlock()
+		return len(agent.session.sendCalls) == 1
+	})
+	// Action 2: add a queued task; both accepted inputs have visible receipts.
+	sendLifecycleMessage(env.engine, p, "second", "queued task")
+	if !p.hasReceipt("first") || !p.hasReceipt("second") {
+		t.Fatal("accepted input lacks a receipt")
+	}
+	// Action 3: stop processing before either task completes.
+	sendLifecycleMessage(env.engine, p, "stop", "/stop")
+	env.waitFor("all cancelled receipts removed", 2*time.Second, func() bool { return !p.hasReceipt("first") && !p.hasReceipt("second") })
+	if p.hasReceipt("stop") {
+		t.Fatal("a local command must not create a work receipt")
+	}
 }

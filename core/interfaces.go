@@ -213,6 +213,12 @@ type TypingIndicator interface {
 	StartTyping(ctx context.Context, replyCtx any) (stop func())
 }
 
+// ReceiptFinisher is an optional cleanup capability for early acknowledgements.
+// It is also called when accepted input fails startup or leaves the queue.
+type ReceiptFinisher interface {
+	FinishReceipt(ctx context.Context, replyCtx any)
+}
+
 // TypingIndicatorDone is an optional interface for platforms that can show a
 // "done" reaction after processing completes. The engine calls AddDoneReaction
 // when the agent finishes a multi-round turn in quiet mode, so the user gets
@@ -458,13 +464,15 @@ type UsageReporter interface {
 
 // UsageReport is a provider-neutral quota snapshot returned by UsageReporter.
 type UsageReport struct {
-	Provider  string
-	AccountID string
-	UserID    string
-	Email     string
-	Plan      string
-	Buckets   []UsageBucket
-	Credits   *UsageCredits
+	// ObservedAtUnix is the timestamp of a provider observation, when supplied.
+	ObservedAtUnix int64
+	Provider       string
+	AccountID      string
+	UserID         string
+	Email          string
+	Plan           string
+	Buckets        []UsageBucket
+	Credits        *UsageCredits
 }
 
 // UsageBucket groups one logical quota, such as standard requests or code review.
@@ -614,6 +622,18 @@ type WorkspaceAgentOptionSnapshotter interface {
 // apply a mode change immediately without restarting the process.
 type LiveModeSwitcher interface {
 	SetLiveMode(mode string) bool
+}
+
+// ModeResolver resolves user aliases against modes the agent advertises.
+// A false result must not be acknowledged as a successful mode change.
+type ModeResolver interface {
+	ResolveMode(mode string) (string, bool)
+}
+
+// PermissionPolicyReporter reports the effective permission policy on a live
+// session. It applies to tool approvals, never answers to user questions.
+type PermissionPolicyReporter interface {
+	AutoApprovesPermissions() bool
 }
 
 // StartupWarner is an optional interface for agent sessions that need to surface

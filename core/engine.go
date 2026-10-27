@@ -2639,6 +2639,7 @@ func (e *Engine) removeQueuedMessageByID(messageID string) (string, bool) {
 		removed := false
 		for _, queued := range pending {
 			if queued.messageID == messageID {
+				go e.finishMessageReceipt(queued.platform, queued.replyCtx)
 				removed = true
 				continue
 			}
@@ -3931,6 +3932,7 @@ func (e *Engine) processInteractiveMessage(p Platform, msg *Message, session *Se
 // lockGen is the generation returned by the TryLock that acquired this turn's
 // busy lock; it must be passed to every session.Unlock of this turn (custom 2026-09-12).
 func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session *Session, agent Agent, sessions *SessionManager, interactiveKey string, workspaceDir string, ccSessionKey string, lockGen uint64) {
+	defer e.finishMessageReceipt(p, msg.ReplyCtx)
 	// session.Unlock() is NOT deferred here — it is called explicitly in
 	// the drain loop below while holding state.mu to close the race window
 	// between "queue is empty" and "session unlocked". A deferred fallback
@@ -3961,6 +3963,12 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 		agentOverride = agent
 	}
 	state := e.getOrCreateInteractiveStateWith(interactiveKey, p, msg.ReplyCtx, session, sessions, agentOverride, ccSessionKey)
+	if state.agentSession != nil {
+		if err := e.applyWorkspaceSessionConfig(state.agentSession, agent, interactiveKey, msg.SessionKey); err != nil {
+			e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgModelChangeFailed, err))
+			return
+		}
+	}
 
 	// Set workspaceDir on the state for idle reaper identification
 	if workspaceDir != "" {
@@ -4128,6 +4136,10 @@ func (e *Engine) getOrCreateWorkspaceAgent(workspace string) (Agent, *SessionMan
 		if m := e.projectState.WorkspaceModelOverride(workspace); m != "" {
 			opts["model"] = m
 		}
+		if effort := e.projectState.WorkspaceReasoningOverride(workspace); effort != "" {
+			opts["reasoning_effort"] = effort
+		}
+
 	}
 
 	// Copy model from original agent if possible
@@ -4169,6 +4181,8 @@ func (e *Engine) getOrCreateWorkspaceAgent(workspace string) (Agent, *SessionMan
 	if err != nil {
 		return nil, nil, fmt.Errorf("create workspace agent for %s: %w", workspace, err)
 	}
+
+	e.restoreWorkspaceEffort(agent, workspace)
 
 	// Wire providers if original agent has them
 	if ps, ok := e.agent.(ProviderSwitcher); ok {
@@ -4380,6 +4394,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 		e.send(p, replyCtx, e.i18n.T(MsgSessionResumeUnsafe))
 	}
 
+	e.restoreWorkspaceEffort(agent, workspaceModelOverrideKey(sessionKey, ccKey, agent))
 	isResume := startSessionID != ""
 	startAt := time.Now()
 	agentSession, err := agent.StartSession(e.ctx, startSessionID)
@@ -5122,6 +5137,9 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 				state.mu.Lock()
 				autoApprove := state.approveAll
 				state.mu.Unlock()
+				if policy, ok := agentSession.(PermissionPolicyReporter); ok && len(event.Questions) == 0 {
+					autoApprove = autoApprove || policy.AutoApprovesPermissions()
+				}
 
 				result := PermissionResult{Behavior: "deny", Message: "denied: no active user turn"}
 				if autoApprove {
@@ -5881,6 +5899,10 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			autoApprove := state.approveAll
 			state.mu.Unlock()
 
+			if policy, ok := state.agentSession.(PermissionPolicyReporter); ok {
+				autoApprove = autoApprove || policy.AutoApprovesPermissions()
+			}
+
 			if autoApprove && !isAskQuestion {
 				slog.Debug("auto-approving (approve-all)", "request_id", event.RequestID, "tool", event.ToolName)
 				_ = state.agentSession.RespondPermission(event.RequestID, PermissionResult{
@@ -6421,6 +6443,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			state.mu.Lock()
 			droppedStale := 0
 			for len(state.pendingMessages) > 0 && e.isQueuedUserMessageStaleForDrainLocked(state, state.pendingMessages[0].userMessageTimeMs) {
+				go e.finishMessageReceipt(state.pendingMessages[0].platform, state.pendingMessages[0].replyCtx)
 				state.pendingMessages = state.pendingMessages[1:]
 				droppedStale++
 			}
@@ -6753,6 +6776,7 @@ func (e *Engine) notifyDroppedQueuedMessages(state *interactiveState, reason err
 	state.mu.Unlock()
 	for _, q := range remaining {
 		e.send(q.platform, q.replyCtx, fmt.Sprintf(e.i18n.T(MsgError), reason))
+		e.finishMessageReceipt(q.platform, q.replyCtx)
 	}
 }
 
@@ -6770,6 +6794,7 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 		}
 		droppedStale := 0
 		for len(state.pendingMessages) > 0 && e.isQueuedUserMessageStaleForDrainLocked(state, state.pendingMessages[0].userMessageTimeMs) {
+			go e.finishMessageReceipt(state.pendingMessages[0].platform, state.pendingMessages[0].replyCtx)
 			state.pendingMessages = state.pendingMessages[1:]
 			droppedStale++
 		}
@@ -6849,7 +6874,7 @@ var builtinCommands = []struct {
 	{[]string{"allow"}, "allow"},
 	{[]string{"model"}, "model"},
 	{[]string{"reasoning", "effort"}, "reasoning"},
-	{[]string{"mode"}, "mode"},
+	{[]string{"mode", "yolo"}, "mode"},
 	{[]string{"lang"}, "lang"},
 	{[]string{"quiet"}, "quiet"},
 	{[]string{"provider"}, "provider"},
@@ -7000,6 +7025,11 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 	parts := splitCommandArgs(raw)
 	cmd := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
 	args := parts[1:]
+	// Keep the alias inside /mode's command authorization and disable rules.
+	if cmd == "yolo" {
+		cmd = "mode"
+		args = append([]string{"yolo"}, args...)
+	}
 
 	cmdID := matchPrefix(cmd, builtinCommands)
 
@@ -9170,9 +9200,14 @@ func (e *Engine) cmdStatus(p Platform, msg *Message) {
 }
 
 func (e *Engine) cmdUsage(p Platform, msg *Message) {
-	agent, _, _, err := e.commandContext(p, msg)
+	agent, sessions, interactiveKey, err := e.commandContext(p, msg)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
+		return
+	}
+
+	if usesSessionControls(agent) {
+		e.sessionUsageCommand(p, msg, agent, sessions, interactiveKey)
 		return
 	}
 
@@ -9205,9 +9240,16 @@ func formatUsageReport(report *UsageReport, lang Language) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(usageAccountLabel(lang))
-	sb.WriteString(accountDisplay(report))
+	if accountDisplay(report) == "-" && report.Provider != "" {
+		sb.WriteString(report.Provider)
+	} else {
+		sb.WriteString(usageAccountLabel(lang))
+		sb.WriteString(accountDisplay(report))
+	}
 	sb.WriteString(formatUsageBlocks(report, lang))
+	if report.ObservedAtUnix > 0 {
+		sb.WriteString("\n\n" + usageObservedLabel(lang) + time.Unix(report.ObservedAtUnix, 0).Local().Format("2006-01-02 15:04:05 MST"))
+	}
 
 	return strings.TrimSpace(sb.String())
 }
@@ -9225,6 +9267,21 @@ func formatUsageBlocks(report *UsageReport, lang Language) string {
 		return ""
 	}
 	return "\n\n" + strings.Join(sections, "\n\n")
+}
+
+func usageObservedLabel(lang Language) string {
+	switch lang {
+	case LangChinese:
+		return "额度数据截至："
+	case LangTraditionalChinese:
+		return "額度資料截至："
+	case LangJapanese:
+		return "観測時刻: "
+	case LangSpanish:
+		return "Datos observados: "
+	default:
+		return "Quota observed at: "
+	}
 }
 
 func accountDisplay(report *UsageReport) string {
@@ -10135,6 +10192,11 @@ func (e *Engine) cmdModel(p Platform, msg *Message, args []string) {
 		return
 	}
 
+	if usesSessionControls(agent) {
+		e.sessionConfigCommand(p, msg, agent, sessions, interactiveKey, "model", args)
+		return
+	}
+
 	switcher, ok := agent.(ModelSwitcher)
 	if !ok {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgModelNotSupported))
@@ -10344,12 +10406,18 @@ func (e *Engine) switchModelOnAgent(agent Agent, target string, persistConfig bo
 }
 
 func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
-	agent, sessions, _, err := e.commandContext(p, msg)
+	agent, sessions, interactiveKey, err := e.commandContext(p, msg)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 		return
 	}
 
+	if usesSessionControls(agent) {
+		e.sessionConfigCommand(p, msg, agent, sessions, interactiveKey, "thought_level", args)
+		return
+	}
+
+	e.restoreWorkspaceEffort(agent, workspaceModelOverrideKey(interactiveKey, msg.SessionKey, agent))
 	switcher, ok := agent.(ReasoningEffortSwitcher)
 	if !ok {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReasoningNotSupported))
@@ -10397,7 +10465,7 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 			e.replyWithButtons(p, msg.ReplyCtx, sb.String(), buttons)
 			return
 		}
-		e.replyWithCard(p, msg.ReplyCtx, e.renderReasoningCard())
+		e.replyWithCard(p, msg.ReplyCtx, e.renderReasoningCardForAgent(agent))
 		return
 	}
 
@@ -10420,6 +10488,7 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 	}
 
 	switcher.SetReasoningEffort(target)
+	e.persistWorkspaceEffortOverride(interactiveKey, msg.SessionKey, agent, switcher.GetReasoningEffort())
 	e.cleanupInteractiveState(e.interactiveKeyForSessionKey(msg.SessionKey))
 
 	s := sessions.GetOrCreateActive(msg.SessionKey)
@@ -10435,7 +10504,7 @@ func (e *Engine) reasoningUsage(efforts []string) string {
 }
 
 func (e *Engine) cmdMode(p Platform, msg *Message, args []string) {
-	agent, _, _, err := e.commandContext(p, msg)
+	agent, sessions, key, err := e.commandContext(p, msg)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 		return
@@ -10447,8 +10516,15 @@ func (e *Engine) cmdMode(p Platform, msg *Message, args []string) {
 		return
 	}
 
+	var live AgentSession
+	if usesSessionControls(agent) {
+		live = e.sessionForControl(p, msg, agent, sessions, key)
+		if live == nil {
+			return
+		}
+	}
 	if len(args) == 0 {
-		if !supportsCards(p) {
+		if !supportsCards(p) || usesSessionControls(agent) {
 			current := switcher.GetMode()
 			modes := switcher.PermissionModes()
 			var sb strings.Builder
@@ -10494,12 +10570,29 @@ func (e *Engine) cmdMode(p Platform, msg *Message, args []string) {
 	}
 
 	target := strings.ToLower(args[0])
+	appliedLive := false
+	if resolver, ok := agent.(ModeResolver); ok {
+		resolved, valid := resolver.ResolveMode(target)
+		if !valid {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgModeChangeFailed)+"\n"+e.modeUsageText(switcher.PermissionModes()))
+			return
+		}
+		target = resolved
+		liveSwitcher, supported := live.(LiveModeSwitcher)
+		if !supported || !liveSwitcher.SetLiveMode(target) {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgModeChangeFailed))
+			return
+		}
+		appliedLive = true
+		e.reconcilePermissionPolicy(key, live)
+	}
 	switcher.SetMode(target)
 	newMode := switcher.GetMode()
-	appliedLive := e.applyLiveModeChange(msg.SessionKey, newMode)
-
 	if !appliedLive {
-		e.cleanupInteractiveState(e.interactiveKeyForSessionKey(msg.SessionKey))
+		appliedLive = e.applyLiveModeChange(msg.SessionKey, newMode)
+		if !appliedLive {
+			e.cleanupInteractiveState(e.interactiveKeyForSessionKey(msg.SessionKey))
+		}
 	}
 
 	modes := switcher.PermissionModes()
@@ -10722,9 +10815,7 @@ func (e *Engine) stopInteractiveSessionWithOptions(sessionKey string, notifyQueu
 		if notifyQueued {
 			e.notifyDroppedQueuedMessages(state, fmt.Errorf("session cancelled"))
 		} else {
-			state.mu.Lock()
-			state.pendingMessages = nil
-			state.mu.Unlock()
+			e.finishDroppedMessageReceipts(state)
 		}
 
 		// Mark eventsNeedResync so the next turn drains stale events from
@@ -10745,6 +10836,7 @@ func (e *Engine) stopInteractiveSessionWithOptions(sessionKey string, notifyQueu
 			slog.Info("session busy lock released after turn cancel", "session_key", sessionKey)
 		}
 
+		e.finishMessageReceipt(closePlatform, closeReplyCtx)
 		slog.Info("agent session turn cancelled, session kept alive",
 			"session_key", sessionKey)
 
@@ -10767,11 +10859,10 @@ normalCleanup:
 	if notifyQueued {
 		e.notifyDroppedQueuedMessages(state, fmt.Errorf("session reset"))
 	} else {
-		state.mu.Lock()
-		state.pendingMessages = nil
-		state.mu.Unlock()
+		e.finishDroppedMessageReceipts(state)
 	}
 	e.closeAgentSessionAsync(sessionKey, agentSession, closePlatform, closeReplyCtx)
+	e.finishMessageReceipt(closePlatform, closeReplyCtx)
 
 	// The stopped turn can never run its own Unlock — release its busy lock
 	// so the next message starts a fresh turn instead of queueing behind a
@@ -12550,7 +12641,8 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 	case "/model":
 		return e.renderModelCard(sessionKey)
 	case "/reasoning":
-		return e.renderReasoningCard()
+		agent, _ := e.sessionContextForKey(sessionKey)
+		return e.renderReasoningCardForAgent(agent)
 	case "/mode":
 		return e.renderModeCard()
 	case "/lang":
@@ -12733,7 +12825,8 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		if args == "" {
 			return
 		}
-		switcher, ok := e.agent.(ReasoningEffortSwitcher)
+		agent, sessions := e.sessionContextForKey(sessionKey)
+		switcher, ok := agent.(ReasoningEffortSwitcher)
 		if !ok {
 			return
 		}
@@ -12745,11 +12838,12 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		for _, effort := range efforts {
 			if effort == target {
 				switcher.SetReasoningEffort(target)
+				e.persistWorkspaceEffortOverride(interactiveKey, sessionKey, agent, switcher.GetReasoningEffort())
 				e.cleanupInteractiveState(interactiveKey)
-				s := e.sessions.GetOrCreateActive(sessionKey)
+				s := sessions.GetOrCreateActive(sessionKey)
 				s.SetAgentSessionID("", "")
 				s.ClearHistory()
-				e.sessions.Save()
+				sessions.Save()
 				return
 			}
 		}
@@ -13551,8 +13645,10 @@ func (e *Engine) renderModelSwitchResultCard(target string, err error) *Card {
 		Build()
 }
 
-func (e *Engine) renderReasoningCard() *Card {
-	switcher, ok := e.agent.(ReasoningEffortSwitcher)
+func (e *Engine) renderReasoningCard() *Card { return e.renderReasoningCardForAgent(e.agent) }
+
+func (e *Engine) renderReasoningCardForAgent(agent Agent) *Card {
+	switcher, ok := agent.(ReasoningEffortSwitcher)
 	if !ok {
 		return e.simpleCard(e.i18n.T(MsgCardTitleReasoning), "orange", e.i18n.T(MsgReasoningNotSupported))
 	}

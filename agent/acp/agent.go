@@ -32,7 +32,9 @@ type Agent struct {
 	// mode is the pending permission mode to apply to new sessions.
 	// When set, StartSession applies it via session/set_mode right after
 	// session/new. Empty means "use whatever the agent selects by default".
-	mode string
+	mode            string
+	model           string
+	reasoningEffort string
 
 	// listUnsupported caches a negative result after we probe the agent
 	// for sessionCapabilities.list once. Eliminates spawn cost on
@@ -45,9 +47,9 @@ type Agent struct {
 	// handshake so that future PermissionModes() calls can reflect the
 	// actual modes this specific ACP agent offers (rather than a
 	// hard-coded fallback that may not match).
-	modesMu       sync.RWMutex
-	modesCache    []core.PermissionModeInfo
-	modesCurrent  string
+	modesMu      sync.RWMutex
+	modesCache   []core.PermissionModeInfo
+	modesCurrent string
 
 	mu sync.RWMutex
 }
@@ -94,16 +96,19 @@ func New(opts map[string]any) (core.Agent, error) {
 	mode, _ := opts["mode"].(string)
 	mode = strings.TrimSpace(mode)
 
+	model, _ := opts["model"].(string)
+	effort, _ := opts["reasoning_effort"].(string)
 	return &Agent{
-		workDir:     workDir,
+		workDir:      workDir,
 		cmd:          cmdStr,
 		cliExtraArgs: cliExtraArgs,
-		args:        args,
-		staticEnv:   staticEnv,
-		extraEnv:    extra,
-		authMethod:  authMethod,
-		displayName: displayName,
-		mode:        mode,
+		args:         args,
+		staticEnv:    staticEnv,
+		extraEnv:     extra,
+		authMethod:   authMethod,
+		displayName:  displayName,
+		mode:         mode,
+		model:        model, reasoningEffort: effort,
 	}, nil
 }
 
@@ -197,6 +202,15 @@ func (a *Agent) WorkspaceAgentOptions() map[string]any {
 	opts := map[string]any{
 		"cmd": a.cmd,
 	}
+	if a.model != "" {
+		opts["model"] = a.model
+	}
+	if a.reasoningEffort != "" {
+		opts["reasoning_effort"] = a.reasoningEffort
+	}
+	if a.mode != "" {
+		opts["mode"] = a.mode
+	}
 	if len(a.args) > 0 {
 		opts["args"] = append([]string(nil), a.args...)
 	}
@@ -228,6 +242,8 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	allArgs := append(append([]string{}, a.cliExtraArgs...), a.args...)
 	workDir := a.workDir
 	authMethod := a.authMethod
+	pendingModel := a.model
+	pendingEffort := a.reasoningEffort
 	pendingMode := a.mode
 	extra := append([]string(nil), a.extraEnv...)
 	extra = append(extra, a.sessionEnv...)
@@ -241,7 +257,8 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 		resumeSessionID: sessionID,
 		authMethod:      authMethod,
 		initialMode:     pendingMode,
-		callbacks:       a,
+		initialModel:    pendingModel, initialEffort: pendingEffort,
+		callbacks: a,
 	})
 }
 
@@ -341,7 +358,19 @@ func (a *Agent) matchModeID(input string) string {
 			return m.Key
 		}
 	}
+	if lower == "yolo" {
+		for _, m := range a.modesCache {
+			if m.Key == "allowAll" {
+				return m.Key
+			}
+		}
+	}
 	return ""
+}
+
+func (a *Agent) ResolveMode(input string) (string, bool) {
+	mode := a.matchModeID(input)
+	return mode, mode != ""
 }
 
 // -- sessionCallbacks impl --
