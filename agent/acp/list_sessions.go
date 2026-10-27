@@ -40,7 +40,10 @@ type acpModesBlock struct {
 // acpInitializeResult is the subset of `initialize` fields this package
 // cares about. Additional vendor metadata is ignored.
 type acpInitializeResult struct {
-	ProtocolVersion   int `json:"protocolVersion"`
+	ProtocolVersion int `json:"protocolVersion"`
+	AgentInfo       struct {
+		Name string `json:"name"`
+	} `json:"agentInfo"`
 	AgentCapabilities struct {
 		LoadSession         bool `json:"loadSession"`
 		SessionCapabilities struct {

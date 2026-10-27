@@ -70,6 +70,11 @@ type acpSession struct {
 	// to the platform instead of buffering them until the next turn.
 	promptInFlight atomic.Int32
 
+	// Replay updates restore cached controls but must never fill the live event queue.
+	replaying atomic.Bool
+	// Muse supplies an explicit boundary for multi-chunk background answers.
+	explicitBackgroundCompletion atomic.Bool
+
 	callbacks sessionCallbacks // may be nil (tests, integration harness)
 }
 
@@ -208,6 +213,7 @@ func (s *acpSession) handshake(resumeSessionID string, authMethod string) error 
 	if err := json.Unmarshal(res, &initOut); err != nil {
 		return fmt.Errorf("acp: parse initialize result: %w", err)
 	}
+	s.explicitBackgroundCompletion.Store(initOut.AgentInfo.Name == "muse-acp")
 	listSupported := len(initOut.AgentCapabilities.SessionCapabilities.List) > 0
 	resumeSupported := len(initOut.AgentCapabilities.SessionCapabilities.Resume) > 0
 	slog.Debug("acp: initialized",
@@ -246,20 +252,17 @@ func (s *acpSession) handshake(resumeSessionID string, authMethod string) error 
 		case initOut.AgentCapabilities.LoadSession:
 			resumeMethod = "session/load"
 		}
-		// Both resume methods may replay conversation history the way
-		// `session/load` does, and a long replay can fill the bounded
-		// events channel and stall the transport read loop. PR #2038
-		// addresses that with a `replaying` guard on acpSession; it is
-		// not merged yet, so this call site cannot set the flag. When
-		// that guard lands it has to cover this path too, otherwise
-		// servers advertising `resume` reintroduce the deadlock #2038
-		// was written to fix.
+		// Historical messages are already persisted. Consume control updates during
+		// replay without publishing old text/tool events to the bounded live queue:
+		// the engine cannot drain it until this handshake has returned.
 		if resumeMethod != "" {
+			s.replaying.Store(true)
 			resumeRes, err := s.tr.call(s.ctx, resumeMethod, map[string]any{
 				"sessionId":  resumeSessionID,
 				"cwd":        s.workDir,
 				"mcpServers": []any{},
 			})
+			s.replaying.Store(false)
 			if err != nil {
 				slog.Warn("acp: session resume failed, starting new session",
 					"method", resumeMethod, "error", err)
@@ -454,12 +457,6 @@ func (s *acpSession) onNotification(method string, params json.RawMessage) {
 		slog.Debug("acp: notification", "method", method)
 		return
 	}
-	if events, handled := backgroundTurnCompletion(s.currentACPSessionID(), params); handled {
-		for _, event := range events {
-			s.emit(event)
-		}
-		return
-	}
 	var usageWrap struct {
 		SessionID string          `json:"sessionId"`
 		Update    json.RawMessage `json:"update"`
@@ -470,9 +467,18 @@ func (s *acpSession) onNotification(method string, params json.RawMessage) {
 	if s.absorbControlUpdate(params) {
 		return
 	}
+	s.maybeAbsorbCurrentModeUpdate(params)
+	if s.replaying.Load() {
+		return
+	}
+	if events, handled := backgroundTurnCompletion(s.currentACPSessionID(), params); handled {
+		for _, event := range events {
+			s.emit(event)
+		}
+		return
+	}
 	s.cacheToolCallInput(params)
 	toolName := s.resolveToolCallName(params)
-	s.maybeAbsorbCurrentModeUpdate(params)
 	sid := s.currentACPSessionID()
 	// Debug log to capture raw session/update JSON for troubleshooting vendor compatibility
 	slog.Debug("acp: session/update", "session_id", sid, "params", string(params))
@@ -491,7 +497,7 @@ func (s *acpSession) onNotification(method string, params json.RawMessage) {
 	// the events buffer until the next foreground turn drains and drops it
 	// as stale. Close it with a synthetic result so the unsolicited reader
 	// relays it immediately.
-	if hasVisible && s.promptInFlight.Load() == 0 {
+	if hasVisible && s.promptInFlight.Load() == 0 && !s.explicitBackgroundCompletion.Load() {
 		s.emit(core.Event{Type: core.EventResult, SessionID: sid, Done: true})
 	}
 }

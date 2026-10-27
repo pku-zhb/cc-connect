@@ -7,6 +7,7 @@ import (
 
 func TestBackgroundTurnCompleted_ReleasesBufferedAnswer(t *testing.T) {
 	s, _, _ := newTestSession(t, nil)
+	s.explicitBackgroundCompletion.Store(true)
 	s.onNotification("session/update", []byte(`{"sessionId":"test-session-id","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"complete background research report"}}}`))
 	s.onNotification("session/update", []byte(`{"sessionId":"test-session-id","update":{"sessionUpdate":"session_info_update","_meta":{"muse":{"backgroundTurnCompleted":{"turnId":"background-report","terminal":"completed","stopReason":"end_turn"}}}}}`))
 	var events []core.Event
@@ -34,6 +35,7 @@ func TestBackgroundTurnCompleted_RejectsWrongSessionAndMalformedMetadata(t *test
 		`{"sessionId":"test-session-id","update":{"sessionUpdate":"session_info_update","_meta":{"muse":{"backgroundTurnCompleted":{"turnId":"b1","terminal":"running"}}}}}`,
 	} {
 		s, _, _ := newTestSession(t, nil)
+		s.explicitBackgroundCompletion.Store(true)
 		s.onNotification("session/update", []byte(data))
 		select {
 		case ev := <-s.events:
@@ -45,6 +47,7 @@ func TestBackgroundTurnCompleted_RejectsWrongSessionAndMalformedMetadata(t *test
 
 func TestBackgroundTurnCompleted_FailurePreservesDiagnosticAndCompletion(t *testing.T) {
 	s, _, _ := newTestSession(t, nil)
+	s.explicitBackgroundCompletion.Store(true)
 	s.onNotification("session/update", []byte(`{"sessionId":"test-session-id","update":{"sessionUpdate":"session_info_update","_meta":{"muse":{"backgroundTurnCompleted":{"turnId":"b1","terminal":"failed","detail":"background provider failed"}}}}}`))
 	first := <-s.events
 	last := <-s.events
