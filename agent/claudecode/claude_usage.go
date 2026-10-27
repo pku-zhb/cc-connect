@@ -84,7 +84,7 @@ func (a *Agent) runClaudeUsageProbe(ctx context.Context) (string, error) {
 	}
 	cmd.Env = env
 
-	var stderr bytes.Buffer
+	var stderr claudeUsageBuffer
 	cmd.Stderr = &stderr
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 40, Cols: 120})
@@ -456,6 +456,24 @@ func detectClaudeUsageOutputError(screen, stderr string) error {
 	default:
 		return nil
 	}
+}
+
+// os/exec copies stderr concurrently while the usage probe inspects it.
+type claudeUsageBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *claudeUsageBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *claudeUsageBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 type claudeUsageTerminal struct {
