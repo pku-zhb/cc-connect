@@ -771,6 +771,8 @@ func TestAvailableModels_BackgroundRefreshUpdatesDiskCache(t *testing.T) {
 	}
 
 	waitForModelsInPersistentCache(t, cachePath, []string{"fresh/model", "second/model"})
+	// Disk publication precedes the in-memory update; wait for the refresh itself.
+	agent.(*Agent).refreshWg.Wait()
 
 	got = switcher.AvailableModels(context.Background())
 	if len(got) != 2 || got[0].Name != "fresh/model" || got[1].Name != "second/model" {

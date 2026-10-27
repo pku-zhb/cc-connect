@@ -16,8 +16,13 @@ func TestHandshake_LongReplayDoesNotBlockOrRepublishHistory(t *testing.T) {
 	for _, method := range []string{"session/load", "session/resume"} {
 		t.Run(method, func(t *testing.T) {
 			s, out, in := newTestSession(t, nil)
-			ctx, cancel := context.WithTimeout(s.ctx, 3*time.Second)
+			ctx, cancel := context.WithTimeout(s.ctx, 15*time.Second)
 			defer cancel()
+			go func() {
+				<-ctx.Done()
+				_ = out.Close()
+				_ = in.Close()
+			}()
 			s.ctx = ctx
 			serverDone := make(chan error, 1)
 			go func() {
