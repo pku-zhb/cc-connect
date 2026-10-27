@@ -264,6 +264,9 @@ func (s *acpSession) handshake(resumeSessionID string, authMethod string) error 
 			})
 			s.replaying.Store(false)
 			if err != nil {
+				if s.ctx.Err() != nil {
+					return fmt.Errorf("acp: %s: %w", resumeMethod, err)
+				}
 				slog.Warn("acp: session resume failed, starting new session",
 					"method", resumeMethod, "error", err)
 			} else {

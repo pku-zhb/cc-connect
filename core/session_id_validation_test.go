@@ -5,6 +5,26 @@ import (
 	"testing"
 )
 
+func TestShutdownDuringResumePreservesSessionBinding(t *testing.T) {
+	a := &controllableAgent{}
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("shutdown-resume", a, []Platform{p}, "", LangEnglish)
+	calls := 0
+	a.startSessionFn = func(ctx context.Context, id string) (AgentSession, error) {
+		calls++
+		if id != "original-long-session" {
+			t.Fatalf("shutdown attempted a fresh session: %q", id)
+		}
+		e.cancel()
+		return nil, ctx.Err()
+	}
+	s := &Session{AgentSessionID: "original-long-session"}
+	state := e.getOrCreateInteractiveStateWith("test:user", p, "ctx", s, e.sessions, nil, "")
+	if calls != 1 || s.GetAgentSessionID() != "original-long-session" || state.agentSession != nil {
+		t.Fatalf("shutdown lost binding or retried: calls=%d id=%q", calls, s.GetAgentSessionID())
+	}
+}
+
 // validatingAgent wraps a controllableAgent and adds an opt-in
 // SessionIDValidator so we can pin the engine's behavior for issue #599:
 // when the stored session ID is rejected by the agent, the engine must
