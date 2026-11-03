@@ -117,7 +117,7 @@ func TestSeparatedProgress_ProcessMessagesShowsNarrationOnly(t *testing.T) {
 	} {
 		s.observe(e, display)
 	}
-	want := "▸ First step\n\n▸ Second step\n▸ with detail"
+	want := "💭 First step\n\n💭 Second step\n💭 with detail"
 	if got := s.render(); got != want {
 		t.Fatalf("progress=%q want=%q", got, want)
 	}
@@ -145,7 +145,7 @@ func TestSeparatedDelivery_ProcessModeProgressAndFinal(t *testing.T) {
 	as.events <- Event{Type: EventText, Content: "Done"}
 	as.events <- Event{Type: EventResult, Done: true}
 	e.processInteractiveEvents(state, session, e.sessions, "test:thread", "msg", time.Now(), nil, nil, "ctx", 0)
-	if card.progress != "▸ Step one" {
+	if card.progress != "💭 Step one" {
 		t.Fatalf("progress=%q want process entries only", card.progress)
 	}
 	if card.answer != "Done" {

@@ -43,13 +43,13 @@ func (s *separatedProgress) promote(show bool) {
 }
 
 // processEntry renders one interim narration segment in process mode.
-// Every line carries the process prefix so consecutive segments read as
-// a step list, distinct from both thinking (💭) and the final answer.
+// Every line carries the same 💭 prefix the other agents' progress
+// entries use, so all bots present process the same way.
 func processEntry(text string) string {
 	lines := strings.Split(strings.TrimSpace(text), "\n")
 	for i, line := range lines {
 		if strings.TrimSpace(line) != "" {
-			lines[i] = "▸ " + line
+			lines[i] = "💭 " + line
 		}
 	}
 	return strings.Join(lines, "\n")
