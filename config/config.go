@@ -203,6 +203,7 @@ type DisplayConfig struct {
 	ShowContextIndicator *bool   `toml:"show_context_indicator"` // whether [ctx: ~N%] suffix is shown; default true
 	ReplyFooter          *bool   `toml:"reply_footer"`           // whether Codex-like footer is shown; default true
 	HideAgentFooter      *bool   `toml:"hide_agent_footer"`      // strip agent-emitted model/token footer lines; default false
+	ProcessMessages      *bool   `toml:"process_messages"`       // separated progress shows interim narration only (process mode); default false
 }
 
 // StreamPreviewConfig controls real-time streaming preview in IM.
@@ -1058,6 +1059,24 @@ func EffectiveCardMode(cfg *Config, proj *ProjectConfig) string {
 		}
 	}
 	return "legacy"
+}
+
+// EffectiveProcessMessages reports whether separated progress should
+// run in process mode (interim narration only, thinking/tool hidden).
+// Per-project overrides global; default false keeps the legacy
+// thinking-driven progress for Muse, Codex and other agents.
+func EffectiveProcessMessages(cfg *Config, proj *ProjectConfig) bool {
+	var projDisp *DisplayConfig
+	if proj != nil {
+		projDisp = proj.Display
+	}
+	if projDisp != nil && projDisp.ProcessMessages != nil {
+		return *projDisp.ProcessMessages
+	}
+	if cfg.Display.ProcessMessages != nil {
+		return *cfg.Display.ProcessMessages
+	}
+	return false
 }
 
 // validatePermissive is like validate but skips the "at least one platform"

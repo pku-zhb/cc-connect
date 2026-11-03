@@ -37,6 +37,12 @@ type cursorSession struct {
 
 	thinkingBuf strings.Builder // accumulate thinking deltas
 
+	// lastText is the most recent assistant text segment of the current
+	// turn. The CLI's result string concatenates every interim narration
+	// segment without separators, so handleResult reports this last
+	// segment as the final answer instead. Reset by each Send.
+	lastText string
+
 	// Permission handling: each Send() creates a new process whose stdin is used
 	// to respond to interaction_query permission requests.
 	stdinMu sync.Mutex
@@ -104,6 +110,7 @@ func (cs *cursorSession) Send(prompt string, messageID string, images []core.Ima
 	if !cs.alive.Load() {
 		return fmt.Errorf("session is closed")
 	}
+	cs.lastText = ""
 
 	chatID := cs.CurrentSessionID()
 	isResume := chatID != ""
@@ -310,6 +317,7 @@ func (cs *cursorSession) handleAssistant(raw map[string]any) {
 		contentType, _ := item["type"].(string)
 		if contentType == "text" {
 			if text, ok := item["text"].(string); ok && text != "" {
+				cs.lastText = text
 				evt := core.Event{Type: core.EventText, Content: text}
 				select {
 				case cs.events <- evt:
@@ -564,6 +572,13 @@ func (cs *cursorSession) handleResult(raw map[string]any) {
 	var content string
 	if result, ok := raw["result"].(string); ok {
 		content = result
+	}
+	// Process UX: the CLI result string glues every interim narration
+	// segment together without separators, which replays the whole
+	// process log on top of the final answer. The last assistant
+	// segment is the turn's actual conclusion, so report that instead.
+	if cs.lastText != "" {
+		content = cs.lastText
 	}
 	if sid, ok := raw["session_id"].(string); ok && sid != "" {
 		cs.chatID.Store(sid)

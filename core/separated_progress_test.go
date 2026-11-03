@@ -99,6 +99,33 @@ func TestSeparatedDelivery_EngineSendsFinalWithoutProgressContamination(t *testi
 	}
 }
 
+// ProcessMessages is the Grok/Cursor display mode the user asked for:
+// the progress message collects only the agent's user-facing interim
+// narration (process), one prefixed entry per segment, while thinking
+// and tool events stay hidden and merely mark segment boundaries.
+func TestSeparatedProgress_ProcessMessagesShowsNarrationOnly(t *testing.T) {
+	var s separatedProgress
+	display := DisplayCfg{ThinkingMessages: false, ToolMessages: false, ProcessMessages: true}
+	for _, e := range []Event{
+		{Type: EventThinking, Content: "Secret reasoning"},
+		{Type: EventText, Content: "First step"},
+		{Type: EventToolUse, ToolName: "Bash", ToolInput: "ls"},
+		{Type: EventThinking, Content: "More secret reasoning"},
+		{Type: EventText, Content: "Second step\nwith detail"},
+		{Type: EventToolUse, ToolName: "Bash", ToolInput: "cat"},
+		{Type: EventText, Content: "Final answer"},
+	} {
+		s.observe(e, display)
+	}
+	want := "▸ First step\n\n▸ Second step\n▸ with detail"
+	if got := s.render(); got != want {
+		t.Fatalf("progress=%q want=%q", got, want)
+	}
+	if got := s.answer(""); got != "Final answer" {
+		t.Fatalf("final=%q want last narration segment", got)
+	}
+}
+
 func TestSeparatedProgress_EmptyPendingTextDoesNotCreateThinkingEmoji(t *testing.T) {
 	var progress separatedProgress
 	display := DisplayCfg{ThinkingMessages: true}
