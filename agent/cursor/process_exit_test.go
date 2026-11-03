@@ -168,6 +168,35 @@ func TestProcessCleanExitAfterFinalText_DeliversLastSegment(t *testing.T) {
 	}
 }
 
+// If tool work happened after the last narration segment, that segment
+// was a preface ("I will check X"), not a conclusion. A clean exit then
+// means the turn died mid-work: never dress the preface up as the final
+// answer; surface the failure instead (seen 2026-11-03 14:23, when a
+// book-lookup turn died during web searches and its preface was
+// delivered as if it were the completed reply).
+func TestProcessCleanExitAfterPrefaceAndTools_EmitsError(t *testing.T) {
+	body := "echo '{\"type\":\"system\",\"session_id\":\"chat-clean-2\"}'\n" +
+		"echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"I will check that\"}]}}'\n" +
+		"echo '{\"type\":\"tool_call\",\"subtype\":\"started\",\"tool_call\":{\"shellToolCall\":{\"args\":{\"command\":\"ls\"}}}}'\n" +
+		"exit 0\n"
+	script := writeFakeAgent(t, body)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cs, err := newCursorSession(ctx, script, nil, t.TempDir(), "", "force", "", nil)
+	if err != nil {
+		t.Fatalf("newCursorSession: %v", err)
+	}
+	defer cs.Close()
+
+	if err := cs.Send("hello", "", nil, nil); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	evt := drainUntilTerminal(t, cs, 5*time.Second)
+	if evt.Type != core.EventError {
+		t.Fatalf("terminal event = %+v, want EventError (preface must not become the answer)", evt)
+	}
+}
+
 // When the session context is cancelled (user /stop, service restart)
 // the killed process must not surface as an agent error.
 func TestProcessKilledByContextCancel_EmitsNoError(t *testing.T) {

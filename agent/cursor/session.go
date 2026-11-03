@@ -45,6 +45,12 @@ type cursorSession struct {
 	// segment as the final answer instead. Reset by each Send.
 	lastText string
 
+	// workAfterLastText records whether any thinking/tool/interaction
+	// activity followed the last assistant segment. If so, that segment
+	// was a preface ("I will check X"), not a conclusion, and must never
+	// be delivered as the final answer when the process dies mid-work.
+	workAfterLastText bool
+
 	// Permission handling: each Send() creates a new process whose stdin is used
 	// to respond to interaction_query permission requests.
 	stdinMu sync.Mutex
@@ -118,6 +124,7 @@ func (cs *cursorSession) Send(prompt string, messageID string, images []core.Ima
 		return fmt.Errorf("session is closed")
 	}
 	cs.lastText = ""
+	cs.workAfterLastText = false
 	return cs.launch(prompt, false)
 }
 
@@ -264,8 +271,10 @@ func (cs *cursorSession) readLoop(cmd *exec.Cmd, stdout io.ReadCloser, stderrBuf
 	// turn finished but the CLI never emitted its result event (seen in
 	// production after a late interaction_query closed stdin). The last
 	// segment is the intended final answer, so deliver it rather than
-	// reporting a spurious failure.
-	if exitErr == nil && scanErr == nil && cs.lastText != "" {
+	// reporting a spurious failure. The guard matters: if any work
+	// followed that segment it was only a preface, and the turn died
+	// mid-work — that path falls through to the error below.
+	if exitErr == nil && scanErr == nil && cs.lastText != "" && !cs.workAfterLastText {
 		slog.Warn("cursorSession: clean exit without result; delivering last assistant segment", "session_id", cs.CurrentSessionID())
 		select {
 		case cs.events <- core.Event{Type: core.EventResult, Content: cs.lastText, SessionID: cs.CurrentSessionID(), Done: true}:
@@ -367,6 +376,7 @@ func (cs *cursorSession) handleThinking(raw map[string]any) {
 		text := cs.thinkingBuf.String()
 		cs.thinkingBuf.Reset()
 		if text != "" {
+			cs.workAfterLastText = true
 			evt := core.Event{Type: core.EventThinking, Content: text}
 			select {
 			case cs.events <- evt:
@@ -395,6 +405,7 @@ func (cs *cursorSession) handleAssistant(raw map[string]any) {
 		if contentType == "text" {
 			if text, ok := item["text"].(string); ok && text != "" {
 				cs.lastText = text
+				cs.workAfterLastText = false
 				evt := core.Event{Type: core.EventText, Content: text}
 				select {
 				case cs.events <- evt:
@@ -407,6 +418,7 @@ func (cs *cursorSession) handleAssistant(raw map[string]any) {
 }
 
 func (cs *cursorSession) handleToolCall(raw map[string]any) {
+	cs.workAfterLastText = true
 	subtype, _ := raw["subtype"].(string)
 	tc, _ := raw["tool_call"].(map[string]any)
 	if tc == nil {
@@ -446,6 +458,7 @@ func (cs *cursorSession) handleInteractionQuery(raw map[string]any) {
 	// arrived after the final assistant segment, with the process already
 	// closing stdin, which used to surface as "exited without a result".
 	slog.Info("cursorSession: interaction query", "query_type", queryType, "mode", cs.mode)
+	cs.workAfterLastText = true
 
 	// query["id"] is a JSON number — decoded as float64 by Go's json package.
 	idFloat, _ := query["id"].(float64)
