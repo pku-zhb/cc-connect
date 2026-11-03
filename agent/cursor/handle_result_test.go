@@ -8,6 +8,52 @@ import (
 	"github.com/chenhg5/cc-connect/core"
 )
 
+// The Cursor CLI's result string concatenates every interim narration
+// segment without separators, so the final answer must come from the
+// last assistant segment instead (see handleResult).
+func TestHandleResult_UsesLastAssistantSegmentAsFinal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cs := &cursorSession{events: make(chan core.Event, 16), ctx: ctx}
+	assistant := func(text string) map[string]any {
+		return map[string]any{"message": map[string]any{"content": []any{
+			map[string]any{"type": "text", "text": text},
+		}}}
+	}
+	cs.handleAssistant(assistant("First narration"))
+	cs.handleAssistant(assistant("Final answer"))
+	cs.handleResult(map[string]any{"result": "First narrationFinal answer"})
+
+	// Drain the two EventText events, then inspect the result event.
+	for i := 0; i < 2; i++ {
+		<-cs.events
+	}
+	select {
+	case evt := <-cs.events:
+		if evt.Type != core.EventResult || evt.Content != "Final answer" {
+			t.Fatalf("result event = %+v, want final segment only", evt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no result event emitted")
+	}
+}
+
+// Without any assistant segment the CLI result string is kept as-is.
+func TestHandleResult_FallsBackToResultString(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cs := &cursorSession{events: make(chan core.Event, 4), ctx: ctx}
+	cs.handleResult(map[string]any{"result": "Only result"})
+	select {
+	case evt := <-cs.events:
+		if evt.Content != "Only result" {
+			t.Fatalf("result content = %q, want CLI result", evt.Content)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no result event emitted")
+	}
+}
+
 // TestParseCursorUsage_NormalCamelCase covers the happy-path payload shape
 // that Cursor Agent CLI 2026.09.02-c22c1a3 emits on stream-json result
 // events (camelCase keys). See issue #1810.

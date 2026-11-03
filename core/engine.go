@@ -336,8 +336,14 @@ type DisplayCfg struct {
 	ThinkingMaxLen   int // max runes for thinking preview; 0 = no truncation
 	ToolMaxLen       int // max runes for tool use preview; 0 = no truncation
 	ToolMessages     bool
-	HistoryMaxLen    *int // max runes for /history entries; nil = default, 0 = no truncation
-	HideAgentFooter  bool // strip model/token footer lines emitted as agent text
+	// ProcessMessages switches separated Slack progress to "process"
+	// mode: the progress message collects only the agent's user-facing
+	// interim narration (one prefixed entry per segment), while thinking
+	// and tool events stay hidden. Used by the Cursor/Grok line, whose
+	// thinking is raw bilingual reasoning the user does not want to see.
+	ProcessMessages bool
+	HistoryMaxLen   *int // max runes for /history entries; nil = default, 0 = no truncation
+	HideAgentFooter bool // strip model/token footer lines emitted as agent text
 }
 
 // InstantReplyCfg controls the immediate confirmation reply sent when a message

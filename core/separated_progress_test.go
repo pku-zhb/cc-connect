@@ -99,6 +99,60 @@ func TestSeparatedDelivery_EngineSendsFinalWithoutProgressContamination(t *testi
 	}
 }
 
+// ProcessMessages is the Grok/Cursor display mode the user asked for:
+// the progress message collects only the agent's user-facing interim
+// narration (process), one prefixed entry per segment, while thinking
+// and tool events stay hidden and merely mark segment boundaries.
+func TestSeparatedProgress_ProcessMessagesShowsNarrationOnly(t *testing.T) {
+	var s separatedProgress
+	display := DisplayCfg{ThinkingMessages: false, ToolMessages: false, ProcessMessages: true}
+	for _, e := range []Event{
+		{Type: EventThinking, Content: "Secret reasoning"},
+		{Type: EventText, Content: "First step"},
+		{Type: EventToolUse, ToolName: "Bash", ToolInput: "ls"},
+		{Type: EventThinking, Content: "More secret reasoning"},
+		{Type: EventText, Content: "Second step\nwith detail"},
+		{Type: EventToolUse, ToolName: "Bash", ToolInput: "cat"},
+		{Type: EventText, Content: "Final answer"},
+	} {
+		s.observe(e, display)
+	}
+	want := "💭 First step\n\n💭 Second step\n💭 with detail"
+	if got := s.render(); got != want {
+		t.Fatalf("progress=%q want=%q", got, want)
+	}
+	if got := s.answer(""); got != "Final answer" {
+		t.Fatalf("final=%q want last narration segment", got)
+	}
+}
+
+// Engine-level check of process mode with a separated card: interim
+// narration lands in the progress message with the process prefix, the
+// final segment is delivered as an independent answer.
+func TestSeparatedDelivery_ProcessModeProgressAndFinal(t *testing.T) {
+	card := &separatedRecordingCard{}
+	p := &separatedRecordingPlatform{stubPlatformEngine: stubPlatformEngine{n: "separated"}, card: card}
+	agent := &stubAgent{}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	e.SetDisplayConfig(DisplayCfg{Mode: "full", ThinkingMessages: false, ToolMessages: false, ProcessMessages: true})
+	session := e.sessions.GetOrCreateActive("test:thread")
+	as := newControllableSession("test-agent")
+	state := &interactiveState{agentSession: as, agent: agent, platform: p, replyCtx: "ctx"}
+	e.interactiveStates["test:thread"] = state
+	as.events <- Event{Type: EventThinking, Content: "Secret reasoning"}
+	as.events <- Event{Type: EventText, Content: "Step one"}
+	as.events <- Event{Type: EventToolUse, ToolName: "Bash", ToolInput: "ls"}
+	as.events <- Event{Type: EventText, Content: "Done"}
+	as.events <- Event{Type: EventResult, Done: true}
+	e.processInteractiveEvents(state, session, e.sessions, "test:thread", "msg", time.Now(), nil, nil, "ctx", 0)
+	if card.progress != "💭 Step one" {
+		t.Fatalf("progress=%q want process entries only", card.progress)
+	}
+	if card.answer != "Done" {
+		t.Fatalf("answer=%q want final segment", card.answer)
+	}
+}
+
 func TestSeparatedProgress_EmptyPendingTextDoesNotCreateThinkingEmoji(t *testing.T) {
 	var progress separatedProgress
 	display := DisplayCfg{ThinkingMessages: true}

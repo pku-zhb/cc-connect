@@ -562,6 +562,7 @@ func main() {
 				ToolMessages:     tool,
 				HistoryMaxLen:    &historyMaxLen,
 				HideAgentFooter:  hideAgentFooter,
+				ProcessMessages:  config.EffectiveProcessMessages(cfg, &proj),
 			})
 		}
 
@@ -1791,6 +1792,7 @@ func reloadConfig(configPath, projName string, engine *core.Engine) (*core.Confi
 		ToolMessages:     tool,
 		HistoryMaxLen:    &historyMaxLen,
 		HideAgentFooter:  hideAgentFooter,
+		ProcessMessages:  config.EffectiveProcessMessages(cfg, proj),
 	})
 	result.DisplayUpdated = true
 
