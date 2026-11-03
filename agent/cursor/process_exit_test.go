@@ -141,6 +141,57 @@ func TestProcessDeathAfterWork_DoesNotRetry(t *testing.T) {
 	}
 }
 
+// A clean exit (code 0, no stderr) after the model already produced its
+// closing assistant segment means the turn finished but the CLI never
+// emitted its result event (seen 2026-11-03 13:33: the summary existed
+// in the transcript yet the user got "exited without a result event").
+// The last segment is the answer; deliver it instead of erroring.
+func TestProcessCleanExitAfterFinalText_DeliversLastSegment(t *testing.T) {
+	body := "echo '{\"type\":\"system\",\"session_id\":\"chat-clean-1\"}'\n" +
+		"echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"All done summary\"}]}}'\n" +
+		"exit 0\n"
+	script := writeFakeAgent(t, body)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cs, err := newCursorSession(ctx, script, nil, t.TempDir(), "", "force", "", nil)
+	if err != nil {
+		t.Fatalf("newCursorSession: %v", err)
+	}
+	defer cs.Close()
+
+	if err := cs.Send("hello", "", nil, nil); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	evt := drainUntilTerminal(t, cs, 5*time.Second)
+	if evt.Type != core.EventResult || evt.Content != "All done summary" {
+		t.Fatalf("terminal event = %+v, want synthesized result from last segment", evt)
+	}
+}
+
+// When the session context is cancelled (user /stop, service restart)
+// the killed process must not surface as an agent error.
+func TestProcessKilledByContextCancel_EmitsNoError(t *testing.T) {
+	script := writeFakeAgent(t, "exec sleep 30\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	cs, err := newCursorSession(ctx, script, nil, t.TempDir(), "", "force", "", nil)
+	if err != nil {
+		t.Fatalf("newCursorSession: %v", err)
+	}
+	if err := cs.Send("hello", "", nil, nil); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+	select {
+	case evt := <-cs.Events():
+		if evt.Type == core.EventError {
+			t.Fatalf("cancelled turn surfaced error: %v", evt.Error)
+		}
+	case <-time.After(2 * time.Second):
+	}
+	cs.Close()
+}
+
 // TestProcessCleanExitWithoutResult_EmitsError covers a clean exit that
 // produced no result event at all: still a dead turn, still must end.
 func TestProcessCleanExitWithoutResult_EmitsError(t *testing.T) {

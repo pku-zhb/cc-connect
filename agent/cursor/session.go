@@ -247,9 +247,29 @@ func (cs *cursorSession) readLoop(cmd *exec.Cmd, stdout io.ReadCloser, stderrBuf
 	scanErr := scanner.Err()
 	exitErr := cmd.Wait()
 
+	// A cancelled context means the user (or a restart) stopped this
+	// turn on purpose; the killed process is not an agent failure.
+	if cs.ctx.Err() != nil {
+		return
+	}
+
 	if gotResult {
 		if exitErr != nil {
 			slog.Warn("cursorSession: process exited with error after result", "error", exitErr, "stderr", truncateStr(strings.TrimSpace(stderrBuf.String()), 200))
+		}
+		return
+	}
+
+	// Clean exit with a closing assistant segment already produced: the
+	// turn finished but the CLI never emitted its result event (seen in
+	// production after a late interaction_query closed stdin). The last
+	// segment is the intended final answer, so deliver it rather than
+	// reporting a spurious failure.
+	if exitErr == nil && scanErr == nil && cs.lastText != "" {
+		slog.Warn("cursorSession: clean exit without result; delivering last assistant segment", "session_id", cs.CurrentSessionID())
+		select {
+		case cs.events <- core.Event{Type: core.EventResult, Content: cs.lastText, SessionID: cs.CurrentSessionID(), Done: true}:
+		case <-cs.ctx.Done():
 		}
 		return
 	}
@@ -422,6 +442,10 @@ func (cs *cursorSession) handleInteractionQuery(raw map[string]any) {
 	if query == nil {
 		return
 	}
+	// Trace what the CLI actually asks: in production these queries have
+	// arrived after the final assistant segment, with the process already
+	// closing stdin, which used to surface as "exited without a result".
+	slog.Info("cursorSession: interaction query", "query_type", queryType, "mode", cs.mode)
 
 	// query["id"] is a JSON number — decoded as float64 by Go's json package.
 	idFloat, _ := query["id"].(float64)
