@@ -191,6 +191,36 @@ func TestHandleInteractionQuery_NonDefaultMode_AutoDenies(t *testing.T) {
 	}
 }
 
+// TestHandleInteractionQuery_ForceMode_AutoApproves verifies yolo: in force
+// mode an interaction_query is approved immediately, without emitting an
+// EventPermissionRequest. Previously force was lumped in with plan/ask and
+// the query was denied, so the CLI never actually ran everything.
+func TestHandleInteractionQuery_ForceMode_AutoApproves(t *testing.T) {
+	cs := newTestSession("force")
+	defer cs.cancel()
+	r := connectStdinPipe(cs)
+
+	done := make(chan map[string]any, 1)
+	go func() {
+		done <- readInteractionResponse(t, r)
+	}()
+
+	cs.handleInteractionQuery(shellInteractionRequest(5, "git status", false))
+
+	resp := <-done
+	response, _ := resp["response"].(map[string]any)
+	inner, _ := response["shellRequestResponse"].(map[string]any)
+	if _, ok := inner["approved"]; !ok {
+		t.Errorf("force mode: expected approved in response, got %v", inner)
+	}
+
+	select {
+	case evt := <-cs.events:
+		t.Errorf("force mode: unexpected event %q", evt.Type)
+	default:
+	}
+}
+
 // TestRespondPermission_Approve writes an approval for a pending query and checks
 // that the correct JSON is sent to stdin.
 func TestRespondPermission_Approve(t *testing.T) {

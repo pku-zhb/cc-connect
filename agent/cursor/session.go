@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -37,10 +39,21 @@ type cursorSession struct {
 
 	thinkingBuf strings.Builder // accumulate thinking deltas
 
+	// lastText is the most recent assistant text segment of the current
+	// turn. The CLI's result string concatenates every interim narration
+	// segment without separators, so handleResult reports this last
+	// segment as the final answer instead. Reset by each Send.
+	lastText string
+
 	// Permission handling: each Send() creates a new process whose stdin is used
 	// to respond to interaction_query permission requests.
 	stdinMu sync.Mutex
 	stdin   io.WriteCloser // current process stdin; nil when no process is running
+
+	// Current child process, so a broken-pipe stdin write can terminate a
+	// process that has already closed its stdin but not yet exited.
+	procMu sync.Mutex
+	proc   *exec.Cmd
 
 	pendingMu sync.Mutex
 	pending   *pendingInteractionQuery // most recent unresolved interaction_query/request
@@ -104,7 +117,14 @@ func (cs *cursorSession) Send(prompt string, messageID string, images []core.Ima
 	if !cs.alive.Load() {
 		return fmt.Errorf("session is closed")
 	}
+	cs.lastText = ""
+	return cs.launch(prompt, false)
+}
 
+// launch starts one Cursor Agent CLI process for prompt and streams its
+// events. retried marks an automatic relaunch after a process died before
+// doing any work (see readLoop); launches never retry more than once.
+func (cs *cursorSession) launch(prompt string, retried bool) error {
 	chatID := cs.CurrentSessionID()
 	isResume := chatID != ""
 
@@ -163,14 +183,17 @@ func (cs *cursorSession) Send(prompt string, messageID string, images []core.Ima
 	cs.stdinMu.Lock()
 	cs.stdin = stdin
 	cs.stdinMu.Unlock()
+	cs.procMu.Lock()
+	cs.proc = cmd
+	cs.procMu.Unlock()
 
 	cs.wg.Add(1)
-	go cs.readLoop(cmd, stdout, &stderrBuf)
+	go cs.readLoop(cmd, stdout, &stderrBuf, prompt, retried)
 
 	return nil
 }
 
-func (cs *cursorSession) readLoop(cmd *exec.Cmd, stdout io.ReadCloser, stderrBuf *bytes.Buffer) {
+func (cs *cursorSession) readLoop(cmd *exec.Cmd, stdout io.ReadCloser, stderrBuf *bytes.Buffer, prompt string, retried bool) {
 	defer cs.wg.Done()
 	defer func() {
 		// Close stdin so Cursor knows the input stream is finished.
@@ -180,24 +203,22 @@ func (cs *cursorSession) readLoop(cmd *exec.Cmd, stdout io.ReadCloser, stderrBuf
 			cs.stdin = nil
 		}
 		cs.stdinMu.Unlock()
-	}()
-	defer func() {
-		if err := cmd.Wait(); err != nil {
-			stderrMsg := strings.TrimSpace(stderrBuf.String())
-			if stderrMsg != "" {
-				slog.Error("cursorSession: process failed", "error", err, "stderr", stderrMsg)
-				evt := core.Event{Type: core.EventError, Error: fmt.Errorf("%s", stderrMsg)}
-				select {
-				case cs.events <- evt:
-				case <-cs.ctx.Done():
-					return
-				}
-			}
+		cs.procMu.Lock()
+		if cs.proc == cmd {
+			cs.proc = nil
 		}
+		cs.procMu.Unlock()
 	}()
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+
+	var gotResult bool
+	// sawWork records whether this process produced anything with possible
+	// side effects (assistant output, a tool call, a permission request).
+	// A process that died before any of these is safe to relaunch once:
+	// no tool can have run on its behalf yet.
+	var sawWork bool
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -213,17 +234,60 @@ func (cs *cursorSession) readLoop(cmd *exec.Cmd, stdout io.ReadCloser, stderrBuf
 			continue
 		}
 
+		switch raw["type"] {
+		case "result":
+			gotResult = true
+		case "assistant", "tool_call", "interaction_query":
+			sawWork = true
+		}
+
 		cs.handleEvent(raw)
 	}
 
-	if err := scanner.Err(); err != nil {
-		slog.Error("cursorSession: scanner error", "error", err)
-		evt := core.Event{Type: core.EventError, Error: fmt.Errorf("read stdout: %w", err)}
-		select {
-		case cs.events <- evt:
-		case <-cs.ctx.Done():
-			return
+	scanErr := scanner.Err()
+	exitErr := cmd.Wait()
+
+	if gotResult {
+		if exitErr != nil {
+			slog.Warn("cursorSession: process exited with error after result", "error", exitErr, "stderr", truncateStr(strings.TrimSpace(stderrBuf.String()), 200))
 		}
+		return
+	}
+
+	// The process ended without a result event. Whatever else happens, the
+	// turn must terminate here: previously this path only emitted an error
+	// when stderr was non-empty, so a process that died silently (e.g. a
+	// TLS abort with nothing on stderr) left the engine waiting for the
+	// idle timeout while the user saw a hung turn.
+	stderrMsg := strings.TrimSpace(stderrBuf.String())
+
+	// One bounded relaunch when the process died before doing any work
+	// (the usual shape of a connection failure at startup). The prompt is
+	// resent with --resume, so the conversation continues in place.
+	if !retried && !sawWork && cs.ctx.Err() == nil {
+		slog.Warn("cursorSession: process died before any work, relaunching once", "exit_error", exitErr, "stderr", truncateStr(stderrMsg, 200))
+		if err := cs.launch(prompt, true); err == nil {
+			return
+		} else {
+			slog.Error("cursorSession: relaunch failed", "error", err)
+		}
+	}
+
+	var turnErr error
+	switch {
+	case stderrMsg != "":
+		turnErr = fmt.Errorf("%s", stderrMsg)
+	case exitErr != nil:
+		turnErr = fmt.Errorf("cursor process exited without a result: %w", exitErr)
+	case scanErr != nil:
+		turnErr = fmt.Errorf("read stdout: %w", scanErr)
+	default:
+		turnErr = fmt.Errorf("cursor process exited without a result event")
+	}
+	slog.Error("cursorSession: process failed with no result", "error", turnErr)
+	select {
+	case cs.events <- core.Event{Type: core.EventError, Error: turnErr}:
+	case <-cs.ctx.Done():
 	}
 }
 
@@ -310,6 +374,7 @@ func (cs *cursorSession) handleAssistant(raw map[string]any) {
 		contentType, _ := item["type"].(string)
 		if contentType == "text" {
 			if text, ok := item["text"].(string); ok && text != "" {
+				cs.lastText = text
 				evt := core.Event{Type: core.EventText, Content: text}
 				select {
 				case cs.events <- evt:
@@ -375,7 +440,14 @@ func (cs *cursorSession) handleInteractionQuery(raw map[string]any) {
 		return
 	}
 
-	// In non-default modes there is no interactive approval path; deny to unblock.
+	// Force mode is yolo (Run Everything): approve immediately, mirroring
+	// what the CLI's own --force/--yolo permission provider would do.
+	if cs.mode == "force" {
+		cs.writeInteractionResponse(queryID, queryType, true, "")
+		return
+	}
+
+	// In the read-only modes there is no interactive approval path; deny to unblock.
 	if cs.mode != "default" {
 		cs.writeInteractionResponse(queryID, queryType, false, "permission mode does not allow interactive approval")
 		return
@@ -436,13 +508,34 @@ func (cs *cursorSession) writeInteractionResponse(queryID int, queryType string,
 	b = append(b, '\n')
 
 	cs.stdinMu.Lock()
-	defer cs.stdinMu.Unlock()
 	if cs.stdin == nil {
+		cs.stdinMu.Unlock()
 		slog.Warn("cursorSession: stdin unavailable, cannot write interaction response")
 		return
 	}
-	if _, err := cs.stdin.Write(b); err != nil {
-		slog.Warn("cursorSession: write interaction response", "error", err)
+	_, writeErr := cs.stdin.Write(b)
+	cs.stdinMu.Unlock()
+	if writeErr != nil {
+		slog.Warn("cursorSession: write interaction response", "error", writeErr)
+		if errors.Is(writeErr, syscall.EPIPE) || strings.Contains(writeErr.Error(), "broken pipe") {
+			// The process has closed its stdin but may not have exited
+			// yet, which would leave readLoop (and the engine's turn)
+			// waiting indefinitely. Kill it so process exit is detected
+			// and the turn terminates through the normal error path.
+			cs.terminateCurrentProcess()
+		}
+	}
+}
+
+// terminateCurrentProcess kills the running Cursor process, if any. Used
+// when the process is known to be half-dead (stdin closed) so its exit is
+// observed promptly instead of hanging the turn.
+func (cs *cursorSession) terminateCurrentProcess() {
+	cs.procMu.Lock()
+	proc := cs.proc
+	cs.procMu.Unlock()
+	if proc != nil && proc.Process != nil {
+		_ = proc.Process.Kill()
 	}
 }
 
@@ -564,6 +657,13 @@ func (cs *cursorSession) handleResult(raw map[string]any) {
 	var content string
 	if result, ok := raw["result"].(string); ok {
 		content = result
+	}
+	// Process UX: the CLI result string glues every interim narration
+	// segment together without separators, which replays the whole
+	// process log on top of the final answer. The last assistant
+	// segment is the turn's actual conclusion, so report that instead.
+	if cs.lastText != "" {
+		content = cs.lastText
 	}
 	if sid, ok := raw["session_id"].(string); ok && sid != "" {
 		cs.chatID.Store(sid)
