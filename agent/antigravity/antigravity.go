@@ -52,6 +52,12 @@ func New(opts map[string]any) (core.Agent, error) {
 	mode, _ := opts["mode"].(string)
 	mode = normalizeMode(mode)
 	cmd, extraArgs := core.ParseCmdOpts(opts, "agy")
+	if format, _ := opts["output_format"].(string); format != "" && format != "text" {
+		if format != "stream-json" {
+			return nil, fmt.Errorf("antigravity: unsupported output_format %q", format)
+		}
+		extraArgs = append(extraArgs, "--output-format", format)
+	}
 
 	var timeoutMins int64
 	switch v := opts["timeout_mins"].(type) {

@@ -283,6 +283,16 @@ func (as *antigravitySession) readLoop(ctx context.Context, cmd *exec.Cmd, stdou
 		_ = stdout.Close()
 	}()
 
+	if as.usesStreamJSON() {
+		if err := as.readStreamJSON(stdout); err != nil {
+			select {
+			case as.events <- core.Event{Type: core.EventError, Error: err}:
+			case <-as.ctx.Done():
+			}
+		}
+		return
+	}
+
 	reader := bufio.NewReader(stdout)
 	buf := make([]byte, 1024)
 

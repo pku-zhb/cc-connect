@@ -2330,6 +2330,7 @@ app_secret = "your-feishu-app-secret"
 # work_dir = "/path/to/project"
 # mode = "default"  # "default" | "yolo" | "plan"
 # cmd = "agy"      # CLI binary name (default: "agy") / CLI 二进制名称（默认 "agy"）
+# output_format = "stream-json" # Modern agy: use native conversation IDs and tool events; omit for older CLIs
 # timeout_mins = 30  # Timeout per conversation turn (minutes) / 每次对话超时时间（分钟）
 #
 # Mode options / 模式说明:
