@@ -106,6 +106,30 @@ func normalizeMode(raw string) string {
 
 func (a *Agent) Name() string { return "antigravity" }
 
+// Preserve the native stream and launcher when the engine creates a channel's
+// agent. Session-specific environment must remain scoped to the new session.
+func (a *Agent) WorkspaceAgentOptions() map[string]any {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	opts := map[string]any{
+		"model":        a.model,
+		"mode":         a.mode,
+		"timeout_mins": int64(a.timeout / time.Minute),
+		"cmd":          append([]string{a.cmd}, a.cliExtraArgs...),
+	}
+	if len(a.configEnv) > 0 {
+		env := make(map[string]string, len(a.configEnv))
+		for _, entry := range a.configEnv {
+			if key, value, ok := strings.Cut(entry, "="); ok {
+				env[key] = value
+			}
+		}
+		opts["env"] = env
+	}
+	return opts
+}
+
 func (a *Agent) SetWorkDir(dir string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
