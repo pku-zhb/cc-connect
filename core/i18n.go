@@ -344,6 +344,11 @@ const (
 	MsgModelNotSupported     MsgKey = "model_not_supported"
 	MsgModelSwitchSession    MsgKey = "model_switch_session"
 	MsgModelSwitchResponse   MsgKey = "model_switch_response"
+	MsgFastNotSupported      MsgKey = "fast_not_supported"
+	MsgFastUsage             MsgKey = "fast_usage"
+	MsgFastReadFailed        MsgKey = "fast_read_failed"
+	MsgFastStatus            MsgKey = "fast_status"
+	MsgFastChanged           MsgKey = "fast_changed"
 	MsgReasoningCurrent      MsgKey = "reasoning_current"
 	MsgReasoningChanged      MsgKey = "reasoning_changed"
 	MsgReasoningNotSupported MsgKey = "reasoning_not_supported"
@@ -1083,6 +1088,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/memory [add|global|global add]\n  View/edit agent memory files\n\n" +
 			"/allow <tool>\n  Pre-allow a tool (next session)\n\n" +
 			"/model [switch <name>]\n  View/switch model\n\n" +
+			"/fast [on|off|status]\n  Toggle/query workspace Fast mode\n\n" +
 			"/reasoning [level]\n  View/switch reasoning effort\n\n" +
 			"/mode [name]\n  View/switch permission mode\n\n" +
 			"/lang [en|zh|zh-TW|ja|es|auto]\n  View/switch language\n\n" +
@@ -1127,6 +1133,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/memory [add|global|global add]\n  查看/编辑 Agent 记忆文件\n\n" +
 			"/allow <工具名>\n  预授权工具（下次会话生效）\n\n" +
 			"/model [switch <名称>]\n  查看/切换模型\n\n" +
+			"/fast [on|off|status]\n  切换/查询 workspace Fast 模式\n\n" +
 			"/reasoning [级别]\n  查看/切换推理强度\n\n" +
 			"/mode [名称]\n  查看/切换权限模式\n\n" +
 			"/lang [en|zh|zh-TW|ja|es|auto]\n  查看/切换语言\n\n" +
@@ -1171,6 +1178,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/memory [add|global|global add]\n  查看/編輯 Agent 記憶檔案\n\n" +
 			"/allow <工具名>\n  預授權工具（下次會話生效）\n\n" +
 			"/model [switch <名稱>]\n  查看/切換模型\n\n" +
+			"/fast [on|off|status]\n  切換/查詢 workspace Fast 模式\n\n" +
 			"/reasoning [級別]\n  查看/切換推理強度\n\n" +
 			"/mode [名稱]\n  查看/切換權限模式\n\n" +
 			"/lang [en|zh|zh-TW|ja|es|auto]\n  查看/切換語言\n\n" +
@@ -1213,6 +1221,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/memory [add|global|global add]\n  エージェントメモリの表示/編集\n\n" +
 			"/allow <ツール名>\n  ツールを事前許可（次のセッションで有効）\n\n" +
 			"/model [switch <名前>]\n  モデルの表示/切り替え\n\n" +
+			"/fast [on|off|status]\n  Fast モードの切り替え/確認\n\n" +
 			"/reasoning [レベル]\n  推論レベルの表示/切り替え\n\n" +
 			"/mode [名前]\n  権限モードの表示/切り替え\n\n" +
 			"/lang [en|zh|zh-TW|ja|es|auto]\n  言語の表示/切り替え\n\n" +
@@ -1255,6 +1264,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/memory [add|global|global add]\n  Ver/editar archivos de memoria del agente\n\n" +
 			"/allow <herramienta>\n  Pre-autorizar herramienta (próxima sesión)\n\n" +
 			"/model [switch <nombre>]\n  Ver/cambiar modelo\n\n" +
+			"/fast [on|off|status]\n  Alternar/consultar modo Fast\n\n" +
 			"/reasoning [nivel]\n  Ver/cambiar nivel de razonamiento\n\n" +
 			"/mode [nombre]\n  Ver/cambiar modo de permisos\n\n" +
 			"/lang [en|zh|zh-TW|ja|es|auto]\n  Ver/cambiar idioma\n\n" +
@@ -2364,6 +2374,41 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "當前 Agent 不支援模型切換。",
 		LangJapanese:           "このエージェントはモデルの切り替えをサポートしていません。",
 		LangSpanish:            "Este agente no soporta el cambio de modelo.",
+	},
+	MsgFastNotSupported: {
+		LangEnglish:            "This agent does not support Fast mode switching.",
+		LangChinese:            "当前 Agent 不支持 Fast 模式切换。",
+		LangTraditionalChinese: "當前 Agent 不支援 Fast 模式切換。",
+		LangJapanese:           "このエージェントは Fast モード切り替えをサポートしていません。",
+		LangSpanish:            "Este agente no admite el cambio de modo Fast.",
+	},
+	MsgFastUsage: {
+		LangEnglish:            "Usage: `/fast` to toggle, `/fast on`, `/fast off`, or `/fast status`.",
+		LangChinese:            "用法：`/fast` 切换，`/fast on` 开启，`/fast off` 关闭，`/fast status` 查询。",
+		LangTraditionalChinese: "用法：`/fast` 切換，`/fast on` 開啟，`/fast off` 關閉，`/fast status` 查詢。",
+		LangJapanese:           "使い方: `/fast` で切り替え、`/fast on`、`/fast off`、`/fast status`。",
+		LangSpanish:            "Uso: `/fast` para alternar, `/fast on`, `/fast off` o `/fast status`.",
+	},
+	MsgFastReadFailed: {
+		LangEnglish:            "Cannot read the current service tier; selection unchanged: %v",
+		LangChinese:            "无法读取当前服务等级，设置未更改：%v",
+		LangTraditionalChinese: "無法讀取目前服務等級，設定未變更：%v",
+		LangJapanese:           "現在のサービス階層を取得できません。設定は変更されていません: %v",
+		LangSpanish:            "No se pudo consultar el nivel actual; selección sin cambios: %v",
+	},
+	MsgFastStatus: {
+		LangEnglish:            "Workspace Fast setting: `%s`. Changes apply to new turns.",
+		LangChinese:            "Workspace Fast 设置：`%s`。切换从下一轮生效。",
+		LangTraditionalChinese: "Workspace Fast 設定：`%s`。切換從下一輪生效。",
+		LangJapanese:           "ワークスペースの Fast 設定: `%s`。変更は次のターンから適用されます。",
+		LangSpanish:            "Modo Fast del espacio de trabajo: `%s`. Los cambios se aplican a nuevos turnos.",
+	},
+	MsgFastChanged: {
+		LangEnglish:            "Workspace Fast set to `%s`. Applies from the next turn; history is preserved.",
+		LangChinese:            "Workspace Fast 已设为 `%s`，从下一轮生效，保留会话历史。",
+		LangTraditionalChinese: "Workspace Fast 已設為 `%s`，從下一輪生效，保留會話歷史。",
+		LangJapanese:           "ワークスペースの Fast を `%s` に設定しました。次のターンから適用し、履歴を保持します。",
+		LangSpanish:            "Modo Fast del espacio establecido en `%s`. Se aplica desde el próximo turno y conserva el historial.",
 	},
 	MsgReasoningCurrent: {
 		LangEnglish:            "Current reasoning effort: %s",

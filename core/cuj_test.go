@@ -2840,3 +2840,67 @@ func TestCUJ_A10_ReceiptCleanupAfterQueueCancellation(t *testing.T) {
 		t.Fatal("a local command must not create a work receipt")
 	}
 }
+
+// CUJ: toggle an inherited Fast default, share the choice across threads in
+// one workspace, preserve history, and restore it without affecting another.
+func TestCUJ_A10_FastPersistsPerWorkspaceAndPreservesHistory(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "state.json")
+	a := newFastTestEnv(t, filepath.Join(root, "a"), file)
+	a.userSends("u1", "hello-fast")
+	controlWait(t, a, "priority:hello-fast")
+	live := a.engine.agent.(*fastTestAgent).session()
+	a.userSends("u1", "/fast")
+	controlWait(t, a, "set to `off`")
+	a.userSends("u1", "hello-standard")
+	controlWait(t, a, "default:hello-standard")
+	if live != a.engine.agent.(*fastTestAgent).session() || live.closed.Get() {
+		t.Fatal("toggle restarted native session")
+	}
+	beforeHistory := len(a.plat.getSent())
+	a.userSends("u1", "/history")
+	history := strings.Join(a.plat.getSent()[beforeHistory:], "\n")
+	if !strings.Contains(history, "hello-fast") || !strings.Contains(history, "hello-standard") {
+		t.Fatal("history lost")
+	}
+	a.userSends("u1", "/fast on")
+	controlWait(t, a, "set to `on`")
+	a.userSends("u1", "/fast status")
+	controlWait(t, a, "Workspace Fast setting: `on`")
+	a.userSends("u1", "/fast off")
+	a.userSends("u2", "another-thread")
+	controlWait(t, a, "default:another-thread")
+	b := newFastTestEnv(t, filepath.Join(root, "b"), file)
+	b.userSends("u1", "other-workspace")
+	controlWait(t, b, "priority:other-workspace")
+	_ = a.engine.Stop()
+	restarted := newFastTestEnv(t, filepath.Join(root, "a"), file)
+	restarted.userSends("u1", "after-restart")
+	controlWait(t, restarted, "default:after-restart")
+}
+
+// CUJ: select standard speed while a Fast turn is running, queue more work,
+// then finish the first turn. The queued turn must use the new selection.
+func TestCUJ_A11_FastBusySelectionAppliesToQueuedTurn(t *testing.T) {
+	env := newFastTestEnv(t, t.TempDir(), filepath.Join(t.TempDir(), "state.json"))
+	env.userSends("u", "held")
+	a := env.engine.agent.(*fastTestAgent)
+	env.waitFor("native session", 2*time.Second, func() bool { a.mu.Lock(); defer a.mu.Unlock(); return len(a.live) > 0 })
+	live := a.session()
+	select {
+	case snapshot := <-live.started:
+		if snapshot != "priority:held" {
+			t.Fatal(snapshot)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("held turn never started")
+	}
+	env.userSends("u", "/fast off")
+	controlWait(t, env, "set to `off`")
+	env.userSends("u", "queued-work")
+	live.events <- Event{Type: EventResult, Content: "held completed", Done: true}
+	controlWait(t, env, "default:queued-work")
+	if live.closed.Get() {
+		t.Fatal("busy command closed native session")
+	}
+}

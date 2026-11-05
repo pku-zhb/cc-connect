@@ -44,6 +44,7 @@ type threadStartResponse struct {
 	Cwd             string  `json:"cwd"`
 	Model           string  `json:"model"`
 	ReasoningEffort *string `json:"reasoningEffort"`
+	ServiceTier     *string `json:"serviceTier"`
 	Thread          struct {
 		ID string `json:"id"`
 	} `json:"thread"`
@@ -53,6 +54,7 @@ type threadResumeResponse struct {
 	Cwd             string  `json:"cwd"`
 	Model           string  `json:"model"`
 	ReasoningEffort *string `json:"reasoningEffort"`
+	ServiceTier     *string `json:"serviceTier"`
 	Thread          struct {
 		ID string `json:"id"`
 	} `json:"thread"`
@@ -147,6 +149,8 @@ type appServerSession struct {
 	workDir        string
 	model          string
 	effort         string
+	tierSource     func() string
+	serviceTier    string // confirmed thread default; protected by runtimeMu
 	mode           string
 	baseURL        string
 	modelProvider  string
@@ -193,7 +197,7 @@ const (
 	appServerUsageRefreshTimeout = 1500 * time.Millisecond
 )
 
-func newAppServerSession(ctx context.Context, cliBin string, cliExtraArgs []string, url, workDir, model, effort, mode, resumeID, baseURL, modelProvider string, extraEnv []string, codexHome string, systemPrompt string, appendPrompt string) (*appServerSession, error) {
+func newAppServerSession(ctx context.Context, cliBin string, cliExtraArgs []string, url, workDir, model, effort, mode, resumeID, baseURL, modelProvider string, extraEnv []string, codexHome string, systemPrompt string, appendPrompt string, tierSources ...func() string) (*appServerSession, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
 	s := &appServerSession{
 		cliBin:           cliBin,
@@ -214,6 +218,9 @@ func newAppServerSession(ctx context.Context, cliBin string, cliExtraArgs []stri
 		pending:          make(map[int64]chan rpcResponseEnvelope),
 		pendingApprovals: make(map[string]chan core.PermissionResult),
 		preambleSent:     resumeID != "" && resumeID != core.ContinueSession,
+	}
+	if len(tierSources) > 0 {
+		s.tierSource = tierSources[0]
 	}
 	s.alive.Store(true)
 
@@ -364,6 +371,7 @@ func (s *appServerSession) ensureThread(resumeID string) error {
 			return fmt.Errorf("codex app-server resume returned empty thread id")
 		}
 		s.applyThreadRuntimeState(resp.Cwd, resp.Model, resp.ReasoningEffort)
+		s.setReportedServiceTier(resp.ServiceTier)
 		s.threadID.Store(resp.Thread.ID)
 		slog.Info("codex app-server thread resumed", "thread_id", resp.Thread.ID)
 		return nil
@@ -377,6 +385,7 @@ func (s *appServerSession) ensureThread(resumeID string) error {
 		return fmt.Errorf("codex app-server start returned empty thread id")
 	}
 	s.applyThreadRuntimeState(resp.Cwd, resp.Model, resp.ReasoningEffort)
+	s.setReportedServiceTier(resp.ServiceTier)
 	s.threadID.Store(resp.Thread.ID)
 	slog.Info("codex app-server thread started", "thread_id", resp.Thread.ID)
 	return nil
@@ -386,6 +395,9 @@ func (s *appServerSession) threadRequestParams() map[string]any {
 	params := map[string]any{
 		"experimentalRawEvents":  false,
 		"persistExtendedHistory": false,
+	}
+	if tier := selectedServiceTier(s.tierSource); tier != "" {
+		params["serviceTier"] = tier
 	}
 	if model := s.GetModel(); model != "" {
 		params["model"] = model
@@ -513,6 +525,9 @@ func (s *appServerSession) Send(prompt string, messageID string, images []core.I
 	params := map[string]any{
 		"threadId": threadID,
 		"input":    input,
+	}
+	if tier := selectedServiceTier(s.tierSource); tier != "" {
+		params["serviceTier"] = tier
 	}
 	if model := s.GetModel(); model != "" {
 		params["model"] = model

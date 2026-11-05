@@ -27,6 +27,7 @@ type codexSession struct {
 	workDir        string
 	model          string
 	effort         string
+	tierSource     func() string
 	mode           string
 	baseURL        string   // provider base URL; passed as -c openai_base_url=<url>
 	modelProvider  string   // Codex model_provider name; passed as -c model_provider=<name>
@@ -91,7 +92,7 @@ func prependCodexPromptPreamble(prompt string, preamble string) string {
 	return "Before answering, follow these project-level instructions for this cc-connect session. They are not user content.\n\n" + preamble + "\n\n---\n\nUser message:\n" + prompt
 }
 
-func newCodexSession(ctx context.Context, cliBin string, cliExtraArgs []string, workDir, model, effort, mode, resumeID, baseURL string, extraEnv []string, modelProvider string, systemPrompt string, appendPrompt string) (*codexSession, error) {
+func newCodexSession(ctx context.Context, cliBin string, cliExtraArgs []string, workDir, model, effort, mode, resumeID, baseURL string, extraEnv []string, modelProvider string, systemPrompt string, appendPrompt string, tierSources ...func() string) (*codexSession, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
 
 	cs := &codexSession{
@@ -109,6 +110,9 @@ func newCodexSession(ctx context.Context, cliBin string, cliExtraArgs []string, 
 		ctx:            sessionCtx,
 		cancel:         cancel,
 		cmds:           make(map[*exec.Cmd]struct{}),
+	}
+	if len(tierSources) > 0 {
+		cs.tierSource = tierSources[0]
 	}
 	cs.alive.Store(true)
 
@@ -326,6 +330,9 @@ func (cs *codexSession) buildExecArgs(prompt string, imagePaths []string) []stri
 		}
 	}
 
+	if tier := selectedServiceTier(cs.tierSource); tier != "" {
+		args = append(args, "-c", fmt.Sprintf("service_tier=%q", tier))
+	}
 	if cs.model != "" {
 		args = append(args, "--model", cs.model)
 	}
@@ -738,10 +745,21 @@ func codexToolSuccess(status string, exitCode *int) bool {
 	return s == "completed" || s == "success" || s == "succeeded" || s == "ok"
 }
 
+type codexRuntimeSettings struct {
+	Model                string  `json:"model"`
+	ModelReasoningEffort *string `json:"model_reasoning_effort"`
+	ServiceTier          string  `json:"service_tier"`
+}
+
 func loadCodexRuntimeConfig(ctx context.Context, cliBin string, cliExtraArgs []string, workDir string, extraEnv []string) (string, string, error) {
+	settings, err := loadCodexRuntimeSettings(ctx, cliBin, cliExtraArgs, workDir, extraEnv)
+	return strings.TrimSpace(settings.Model), normalizeRuntimeReasoningEffort(stringValue(settings.ModelReasoningEffort)), err
+}
+
+func loadCodexRuntimeSettings(ctx context.Context, cliBin string, cliExtraArgs []string, workDir string, extraEnv []string) (codexRuntimeSettings, error) {
 	bin, err := resolveCodexExecutable(cliBin)
 	if err != nil {
-		return "", "", fmt.Errorf("runtime config resolve CLI: %w", err)
+		return codexRuntimeSettings{}, fmt.Errorf("runtime config resolve CLI: %w", err)
 	}
 	args := append(append([]string(nil), cliExtraArgs...), "app-server")
 	cmd := exec.CommandContext(ctx, bin, args...)
@@ -753,17 +771,17 @@ func loadCodexRuntimeConfig(ctx context.Context, cliBin string, cliExtraArgs []s
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return "", "", fmt.Errorf("runtime config stdin pipe: %w", err)
+		return codexRuntimeSettings{}, fmt.Errorf("runtime config stdin pipe: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return "", "", fmt.Errorf("runtime config stdout pipe: %w", err)
+		return codexRuntimeSettings{}, fmt.Errorf("runtime config stdout pipe: %w", err)
 	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
-		return "", "", fmt.Errorf("runtime config start app-server: %w", err)
+		return codexRuntimeSettings{}, fmt.Errorf("runtime config start app-server: %w", err)
 	}
 	defer func() {
 		_ = stdin.Close()
@@ -783,27 +801,25 @@ func loadCodexRuntimeConfig(ctx context.Context, cliBin string, cliExtraArgs []s
 			"version": "0.1.0",
 		},
 	}, nil); err != nil {
-		return "", "", err
+		return codexRuntimeSettings{}, err
 	}
 	nextID++
 
 	if err := rpcNotifyOverIO(stdin, "initialized", map[string]any{}); err != nil {
-		return "", "", err
+		return codexRuntimeSettings{}, err
 	}
 
 	var resp struct {
-		Config struct {
-			Model                string  `json:"model"`
-			ModelReasoningEffort *string `json:"model_reasoning_effort"`
-		} `json:"config"`
+		Config codexRuntimeSettings `json:"config"`
 	}
 	if err := rpcRequestOverIO(stdin, reader, nextID, "config/read", map[string]any{
 		"includeLayers": false,
+		"cwd":           workDir,
 	}, &resp); err != nil {
-		return "", "", err
+		return codexRuntimeSettings{}, err
 	}
 
-	return strings.TrimSpace(resp.Config.Model), normalizeRuntimeReasoningEffort(stringValue(resp.Config.ModelReasoningEffort)), nil
+	return resp.Config, nil
 }
 
 func rpcRequestOverIO(stdin io.Writer, reader *bufio.Reader, id int64, method string, params any, out any) error {

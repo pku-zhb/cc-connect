@@ -4268,6 +4268,7 @@ func (e *Engine) getOrCreateWorkspaceAgent(workspace string) (Agent, *SessionMan
 	}
 
 	e.restoreWorkspaceEffort(agent, workspace)
+	e.restoreWorkspaceServiceTier(agent, workspace)
 
 	// Wire providers if original agent has them
 	if ps, ok := e.agent.(ProviderSwitcher); ok {
@@ -4480,6 +4481,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 	}
 
 	e.restoreWorkspaceEffort(agent, workspaceModelOverrideKey(sessionKey, ccKey, agent))
+	e.restoreWorkspaceServiceTier(agent, workspaceModelOverrideKey(sessionKey, ccKey, agent))
 	isResume := startSessionID != ""
 	startAt := time.Now()
 	agentSession, err := agent.StartSession(e.ctx, startSessionID)
@@ -7094,6 +7096,7 @@ var builtinCommands = []struct {
 	{[]string{"allow"}, "allow"},
 	{[]string{"model"}, "model"},
 	{[]string{"reasoning", "effort"}, "reasoning"},
+	{[]string{"fast"}, "fast"},
 	{[]string{"mode", "yolo"}, "mode"},
 	{[]string{"lang"}, "lang"},
 	{[]string{"quiet"}, "quiet"},
@@ -7309,6 +7312,8 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		e.cmdModel(p, msg, args)
 	case "reasoning":
 		e.cmdReasoning(p, msg, args)
+	case "fast":
+		e.cmdFast(p, msg, args)
 	case "mode":
 		e.cmdMode(p, msg, args)
 	case "lang":

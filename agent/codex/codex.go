@@ -36,6 +36,7 @@ type Agent struct {
 	workDir         string
 	model           string
 	reasoningEffort string
+	serviceTier     string
 	mode            string // "suggest" | "auto-edit" | "full-auto" | "yolo"
 	backend         string // "exec" | "app_server"
 	appServerURL    string
@@ -58,6 +59,11 @@ func New(opts map[string]any) (core.Agent, error) {
 	}
 	model, _ := opts["model"].(string)
 	reasoningEffort, _ := opts["reasoning_effort"].(string)
+	tier, _ := opts["service_tier"].(string)
+	tier = normalizeServiceTier(tier)
+	if tier != "" && tier != "priority" && tier != "default" {
+		return nil, fmt.Errorf("codex: unsupported service_tier %q (use fast, priority, or default)", tier)
+	}
 	mode, _ := opts["mode"].(string)
 	backend, _ := opts["backend"].(string)
 	appServerURL, _ := opts["app_server_url"].(string)
@@ -98,6 +104,7 @@ func New(opts map[string]any) (core.Agent, error) {
 		workDir:         workDir,
 		model:           model,
 		reasoningEffort: normalizeReasoningEffort(reasoningEffort),
+		serviceTier:     tier,
 		mode:            mode,
 		backend:         backend,
 		appServerURL:    appServerURL,
@@ -530,13 +537,13 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	}
 
 	if backend == "app_server" {
-		return newAppServerSession(ctx, cliBin, cliExtraArgs, appServerURL, workDir, model, reasoningEffort, mode, sessionID, baseURL, provName, extraEnv, codexHome, systemPrompt, appendPrompt)
+		return newAppServerSession(ctx, cliBin, cliExtraArgs, appServerURL, workDir, model, reasoningEffort, mode, sessionID, baseURL, provName, extraEnv, codexHome, systemPrompt, appendPrompt, a.configuredServiceTier)
 	}
 	if codexHome != "" {
 		extraEnv = append(extraEnv, "CODEX_HOME="+codexHome)
 	}
 
-	return newCodexSession(ctx, cliBin, cliExtraArgs, workDir, model, reasoningEffort, mode, sessionID, baseURL, extraEnv, provName, systemPrompt, appendPrompt)
+	return newCodexSession(ctx, cliBin, cliExtraArgs, workDir, model, reasoningEffort, mode, sessionID, baseURL, extraEnv, provName, systemPrompt, appendPrompt, a.configuredServiceTier)
 }
 
 func (a *Agent) ListSessions(_ context.Context) ([]core.AgentSessionInfo, error) {
@@ -597,6 +604,9 @@ func (a *Agent) WorkspaceAgentOptions() map[string]any {
 	}
 	if a.reasoningEffort != "" {
 		opts["reasoning_effort"] = a.reasoningEffort
+	}
+	if a.serviceTier != "" {
+		opts["service_tier"] = a.serviceTier
 	}
 	if a.appServerURL != "" {
 		opts["app_server_url"] = a.appServerURL

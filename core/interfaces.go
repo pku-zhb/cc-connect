@@ -469,6 +469,18 @@ type ReasoningEffortSwitcher interface {
 	AvailableReasoningEfforts() []string
 }
 
+// ServiceTierSwitcher selects a workspace default for subsequent turns.
+// GetServiceTier resolves inherited defaults; a failure must not be treated as off.
+type ServiceTierSwitcher interface {
+	SetServiceTier(string)
+	GetServiceTier(context.Context) (string, error)
+}
+
+// ServiceTierReporter reports the selected tier of a live session.
+type ServiceTierReporter interface {
+	GetServiceTier(context.Context) (string, error)
+}
+
 // ModelOption describes a selectable model.
 type ModelOption struct {
 	Name  string // model identifier passed to CLI
