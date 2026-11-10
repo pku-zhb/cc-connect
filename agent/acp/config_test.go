@@ -82,6 +82,40 @@ func TestSessionConfig_RejectsInvalidAndDoesNotUpdateOnRPCError(t *testing.T) {
 	}
 }
 
+func TestSessionConfig_EmptyChoicesStillAskTheHost(t *testing.T) {
+	s, out, in := newTestSession(t, nil)
+	if err := s.absorbConfigJSON([]byte(`{"configOptions":[{"id":"model","name":"Model","category":"model","type":"select","currentValue":"muse-wonder-full-1.0","options":[]}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		var req struct {
+			ID     json.RawMessage
+			Method string
+			Params struct{ SessionID, ConfigID, Value string }
+		}
+		if err := json.NewDecoder(in).Decode(&req); err != nil {
+			done <- err
+			return
+		}
+		if req.Method != "session/set_config_option" || req.Params.ConfigID != "model" || req.Params.Value != "muse-wonder-1.0" {
+			done <- fmt.Errorf("wrong request: %+v", req)
+			return
+		}
+		_, err := fmt.Fprintf(out, "{\"id\":%s,\"result\":{\"configOptions\":[{\"id\":\"model\",\"category\":\"model\",\"type\":\"select\",\"currentValue\":\"muse-wonder-1.0\",\"options\":[]}]}}\n", req.ID)
+		done <- err
+	}()
+	if err := s.SetConfigOption(context.Background(), "model", "muse-wonder-1.0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if s.GetModel() != "muse-wonder-1.0" {
+		t.Fatalf("host-accepted model not saved: %q", s.GetModel())
+	}
+}
+
 func TestSessionControls_NotificationsNeverBecomeConversationText(t *testing.T) {
 	s, _, _ := newTestSession(t, nil)
 	update := `{"sessionId":"test-session-id","update":{"sessionUpdate":"config_option_update",` + configFixture[1:]

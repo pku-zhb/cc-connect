@@ -104,10 +104,14 @@ func (s *acpSession) ConfigOptions() []core.SessionConfigOption {
 func (s *acpSession) SetConfigOption(ctx context.Context, id, value string) error {
 	s.configWriteMu.Lock()
 	defer s.configWriteMu.Unlock()
-	valid := false
+	found, hasChoices, valid := false, false, false
 	for _, option := range s.ConfigOptions() {
 		if option.ID != id {
 			continue
+		}
+		found = true
+		if len(option.Options) > 0 {
+			hasChoices = true
 		}
 		for _, v := range option.Options {
 			if v.Value == value {
@@ -116,7 +120,10 @@ func (s *acpSession) SetConfigOption(ctx context.Context, id, value string) erro
 			}
 		}
 	}
-	if !valid {
+	// Muse 1.4.15 can advertise a model selector with no choices when its
+	// bundled catalog is empty, but still accepts a known model id such as
+	// muse-wonder-1.0. Ask the host in that case instead of failing locally.
+	if !found || (hasChoices && !valid) {
 		return fmt.Errorf("acp: unsupported value %q for config option %q", value, id)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
