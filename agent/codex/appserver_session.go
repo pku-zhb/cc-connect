@@ -1136,6 +1136,9 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 	case "turn/started":
 		var notif turnNotification
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
+			if s.isOtherThread(notif.ThreadID) {
+				return
+			}
 			s.stateMu.Lock()
 			s.currentTurn = notif.Turn.ID
 			s.pendingMsgs = s.pendingMsgs[:0]
@@ -1161,6 +1164,9 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 	case "turn/completed":
 		var notif turnNotification
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
+			if s.isOtherThread(notif.ThreadID) || s.isOtherTurn(notif.Turn.ID) {
+				return
+			}
 			if strings.EqualFold(strings.TrimSpace(notif.Turn.Status), "failed") || notif.Turn.Error != nil {
 				errMsg := ""
 				if notif.Turn.Error != nil {
@@ -1182,7 +1188,7 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 				Type string `json:"type"`
 			} `json:"status"`
 		}
-		if err := json.Unmarshal(paramsRaw, &notif); err == nil && notif.Status.Type == "idle" {
+		if err := json.Unmarshal(paramsRaw, &notif); err == nil && notif.Status.Type == "idle" && !s.isOtherThread(notif.ThreadID) {
 			// In codex 0.125+, thread going idle signals turn completion.
 			s.completeTurn()
 		}
@@ -1555,6 +1561,22 @@ func rpcIDToInt64(v any) (int64, bool) {
 		return i, err == nil
 	}
 	return 0, false
+}
+
+// isOtherThread reports whether a notification belongs to a thread other than
+// the session's main thread, such as a subagent thread. Turn lifecycle events
+// from those threads must not start or end the main turn.
+func (s *appServerSession) isOtherThread(threadID string) bool {
+	main := s.CurrentSessionID()
+	return threadID != "" && main != "" && threadID != main
+}
+
+// isOtherTurn reports whether turnID differs from the in-flight main turn.
+func (s *appServerSession) isOtherTurn(turnID string) bool {
+	s.stateMu.Lock()
+	current := s.currentTurn
+	s.stateMu.Unlock()
+	return turnID != "" && current != "" && turnID != current
 }
 
 func (s *appServerSession) completeTurn() {

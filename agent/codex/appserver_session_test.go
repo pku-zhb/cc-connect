@@ -613,3 +613,49 @@ func TestAppServerListenURL(t *testing.T) {
 		}
 	}
 }
+
+func TestAppServerSession_IgnoresSubagentTurnLifecycle(t *testing.T) {
+	s := &appServerSession{
+		events:      make(chan core.Event, 4),
+		currentTurn: "main-turn",
+		pendingMsgs: []string{"main reply"},
+	}
+	s.threadID.Store("main-thread")
+
+	notify := func(method string, payload map[string]any) {
+		t.Helper()
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("marshal %s: %v", method, err)
+		}
+		s.handleNotification(method, raw)
+	}
+
+	notify("turn/started", map[string]any{"threadId": "sub-thread", "turn": map[string]any{"id": "sub-turn"}})
+	notify("turn/completed", map[string]any{"threadId": "sub-thread", "turn": map[string]any{"id": "sub-turn", "status": "completed"}})
+	notify("thread/status/changed", map[string]any{"threadId": "sub-thread", "status": map[string]any{"type": "idle"}})
+	notify("turn/completed", map[string]any{"threadId": "main-thread", "turn": map[string]any{"id": "stale-turn", "status": "completed"}})
+
+	select {
+	case ev := <-s.events:
+		t.Fatalf("non-main lifecycle event emitted %#v", ev)
+	default:
+	}
+	s.stateMu.Lock()
+	currentTurn, pending := s.currentTurn, len(s.pendingMsgs)
+	s.stateMu.Unlock()
+	if currentTurn != "main-turn" || pending != 1 {
+		t.Fatalf("state = (%q, %d pending), want (main-turn, 1 pending)", currentTurn, pending)
+	}
+
+	notify("turn/completed", map[string]any{"threadId": "main-thread", "turn": map[string]any{"id": "main-turn", "status": "completed"}})
+	var sawResult bool
+	for len(s.events) > 0 {
+		if ev := <-s.events; ev.Type == core.EventResult && ev.Done {
+			sawResult = true
+		}
+	}
+	if !sawResult {
+		t.Fatal("main turn/completed did not emit a done result")
+	}
+}
