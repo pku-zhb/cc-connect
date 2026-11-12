@@ -10617,7 +10617,8 @@ func parseModelSwitchArgs(args []string) (string, bool) {
 		return args[0], true
 	}
 	if strings.EqualFold(strings.TrimSpace(args[0]), "switch") && len(args) >= 2 {
-		return strings.TrimSpace(args[1]), true
+		// Extra words (e.g. "argon high") are kept for agents that resolve them.
+		return strings.TrimSpace(strings.Join(args[1:], " ")), true
 	}
 	return "", false
 }
@@ -10635,6 +10636,15 @@ func (e *Engine) switchModelOnAgent(agent Agent, target string, persistConfig bo
 	switcher, ok := agent.(ModelSwitcher)
 	if !ok {
 		return target, nil
+	}
+	if resolver, ok := agent.(ModelResolver); ok {
+		ctx, cancel := context.WithTimeout(e.ctx, 30*time.Second)
+		resolved, err := resolver.ResolveModel(ctx, target)
+		cancel()
+		if err != nil {
+			return "", err
+		}
+		target = resolved
 	}
 
 	providerSwitcher, ok := agent.(ProviderSwitcher)
@@ -13052,6 +13062,13 @@ func (e *Engine) persistWorkspaceModelOverride(interactiveKey, sessionKey string
 		return
 	}
 	e.projectState.SetWorkspaceModelOverride(workspace, model)
+	// A model ID can carry its own effort; keep an explicit effort selection
+	// consistent with it so a restart does not revert the new model's tier.
+	if switcher, ok := agent.(ReasoningEffortSwitcher); ok && e.projectState.WorkspaceReasoningOverride(workspace) != "" {
+		if effort := switcher.GetReasoningEffort(); effort != "" {
+			e.projectState.SetWorkspaceReasoningOverride(workspace, effort)
+		}
+	}
 	e.projectState.Save()
 }
 

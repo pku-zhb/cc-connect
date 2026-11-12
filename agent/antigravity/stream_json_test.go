@@ -17,7 +17,7 @@ func TestModernAgyStreamPreservesSessionIDAndPlainText(t *testing.T) {
 		fmt.Println(`{"event":"result","result":{"conversation_id":"native-conversation","status":"SUCCESS","response":"hello"}}`)
 		os.Exit(0)
 	}
-	s, err := newAntigravitySession(context.Background(), os.Args[0], []string{"-test.run=TestModernAgyStreamPreservesSessionIDAndPlainText", "--", "--output-format", "stream-json"}, t.TempDir(), "", "yolo", "", []string{"CC_AGY_STREAM_HELPER=1"}, 0)
+	s, err := newAntigravitySession(context.Background(), os.Args[0], []string{"-test.run=TestModernAgyStreamPreservesSessionIDAndPlainText", "--", "--output-format", "stream-json"}, t.TempDir(), nil, "yolo", "", []string{"CC_AGY_STREAM_HELPER=1"}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestModernAgyStreamPreservesSessionIDAndPlainText(t *testing.T) {
 // Modern agy writes its conversations outside the legacy .gemini/tmp store.
 // The native stream must carry the conversation ID without scanning that store.
 func TestStreamJSONPreservesConversationIDWithoutLegacyChatFiles(t *testing.T) {
-	s, err := newAntigravitySession(context.Background(), "echo", []string{"--output-format", "stream-json"}, t.TempDir(), "", "yolo", "", nil, 0)
+	s, err := newAntigravitySession(context.Background(), "echo", []string{"--output-format", "stream-json"}, t.TempDir(), nil, "yolo", "", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestStreamJSONResultFallbackAndFailure(t *testing.T) {
 		{"missing result", `{"event":"init","conversation_id":"id"}`, "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s, err := newAntigravitySession(context.Background(), "echo", []string{"--output-format=stream-json"}, t.TempDir(), "", "yolo", "", nil, 0)
+			s, err := newAntigravitySession(context.Background(), "echo", []string{"--output-format=stream-json"}, t.TempDir(), nil, "yolo", "", nil, 0)
 			if err != nil {
 				t.Fatal(err)
 			}

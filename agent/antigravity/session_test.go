@@ -61,7 +61,7 @@ func TestNormalizeMode(t *testing.T) {
 func TestSession_ContinueSessionTreatedAsFresh(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	s, err := newAntigravitySession(context.Background(), "echo", nil, "/tmp", "", "default", core.ContinueSession, nil, 0)
+	s, err := newAntigravitySession(context.Background(), "echo", nil, "/tmp", nil, "default", core.ContinueSession, nil, 0)
 	if err != nil {
 		t.Fatalf("newAntigravitySession: %v", err)
 	}
@@ -73,8 +73,8 @@ func TestSession_ContinueSessionTreatedAsFresh(t *testing.T) {
 }
 
 func TestBuildAntigravityArgs_PromptAtEnd(t *testing.T) {
-	s, _ := newAntigravitySession(context.Background(), "echo", []string{"--verbose"}, "/tmp", "", "default", "", nil, 0)
-	args := s.buildAntigravityArgs("sid-1", true, "plan", "/tmp/agy-config", "What is 1+1?")
+	s, _ := newAntigravitySession(context.Background(), "echo", []string{"--verbose"}, "/tmp", nil, "default", "", nil, 0)
+	args := s.buildAntigravityArgs("sid-1", true, "plan", "/tmp/agy-config", "", "What is 1+1?")
 	if len(args) < 2 {
 		t.Fatalf("args too short: %v", args)
 	}
@@ -115,7 +115,7 @@ func TestAntigravitySession_ResumePassesConversationID(t *testing.T) {
 		os.Args[0],
 		[]string{"-test.run=TestAntigravitySession_ResumePassesConversationID", "--"},
 		workDir,
-		"",
+		nil,
 		"default",
 		"conversation-1",
 		[]string{
@@ -166,7 +166,7 @@ func TestAntigravitySession_ResumePassesConversationID(t *testing.T) {
 func TestDefaultModeCreatesPermissionBridge(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	s, err := newAntigravitySession(context.Background(), "echo", nil, "/tmp", "", "default", "", nil, 0)
+	s, err := newAntigravitySession(context.Background(), "echo", nil, "/tmp", nil, "default", "", nil, 0)
 	if err != nil {
 		t.Fatalf("newAntigravitySession: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestNonDefaultModesDoNotCreatePermissionBridge(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 
-			s, err := newAntigravitySession(context.Background(), "echo", nil, "/tmp", "", mode, "", nil, 0)
+			s, err := newAntigravitySession(context.Background(), "echo", nil, "/tmp", nil, mode, "", nil, 0)
 			if err != nil {
 				t.Fatalf("newAntigravitySession: %v", err)
 			}
@@ -199,7 +199,7 @@ func TestNonDefaultModesDoNotCreatePermissionBridge(t *testing.T) {
 }
 
 func TestRespondPermissionRequiresDefaultMode(t *testing.T) {
-	s, err := newAntigravitySession(context.Background(), "echo", nil, "/tmp", "", "plan", "", nil, 0)
+	s, err := newAntigravitySession(context.Background(), "echo", nil, "/tmp", nil, "plan", "", nil, 0)
 	if err != nil {
 		t.Fatalf("newAntigravitySession: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestSendDoesNotHoldStdinOpen(t *testing.T) {
 		t.Fatalf("WriteFile fake agy: %v", err)
 	}
 
-	s, err := newAntigravitySession(context.Background(), cmdPath, nil, workDir, "", "default", "", nil, 2*time.Second)
+	s, err := newAntigravitySession(context.Background(), cmdPath, nil, workDir, nil, "default", "", nil, 2*time.Second)
 	if err != nil {
 		t.Fatalf("newAntigravitySession: %v", err)
 	}

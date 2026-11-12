@@ -25,7 +25,7 @@ type antigravitySession struct {
 	cmd              string
 	extraArgs        []string // extra args from cmd, prepended before agy args
 	workDir          string
-	model            string
+	model            func() string // read per turn so /model and /reasoning apply live
 	mode             string
 	timeout          time.Duration
 	extraEnv         []string
@@ -39,7 +39,7 @@ type antigravitySession struct {
 	permissionBridge *agyPermissionBridge
 }
 
-func newAntigravitySession(ctx context.Context, cmd string, extraArgs []string, workDir, model, mode, resumeID string, extraEnv []string, timeout time.Duration) (*antigravitySession, error) {
+func newAntigravitySession(ctx context.Context, cmd string, extraArgs []string, workDir string, model func() string, mode, resumeID string, extraEnv []string, timeout time.Duration) (*antigravitySession, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
 
 	as := &antigravitySession{
@@ -149,10 +149,9 @@ func (as *antigravitySession) Send(prompt string, messageID string, images []cor
 	if as.permissionBridge != nil {
 		agyConfigDir = as.permissionBridge.AgyConfigDir()
 	}
-	args := as.buildAntigravityArgs(chatID, isResume, as.mode, agyConfigDir, fullPrompt)
-	if strings.TrimSpace(as.model) != "" {
-		slog.Warn("antigravitySession: model is configured but ignored because agy does not support --model yet", "model", as.model)
-	}
+	model := as.currentModel()
+	args := as.buildAntigravityArgs(chatID, isResume, as.mode, agyConfigDir, model, fullPrompt)
+	slog.Info("antigravitySession: launching agy", "model", model, "resume", isResume)
 
 	var ctx context.Context
 	var cancel context.CancelFunc
@@ -206,7 +205,14 @@ func (as *antigravitySession) Send(prompt string, messageID string, images []cor
 	return nil
 }
 
-func (as *antigravitySession) buildAntigravityArgs(chatID string, isResume bool, mode, agyConfigDir, fullPrompt string) []string {
+func (as *antigravitySession) currentModel() string {
+	if as.model == nil {
+		return ""
+	}
+	return strings.TrimSpace(as.model())
+}
+
+func (as *antigravitySession) buildAntigravityArgs(chatID string, isResume bool, mode, agyConfigDir, model, fullPrompt string) []string {
 	// Prepend extra args from cmd so wrappers like "timeout 3600 agy" work.
 	// Keep "-p <prompt>" at the very end because agy consumes the immediate next arg.
 	args := append([]string{}, as.extraArgs...)
@@ -222,6 +228,9 @@ func (as *antigravitySession) buildAntigravityArgs(chatID string, isResume bool,
 		args = append(args, "--dangerously-skip-permissions")
 	case "plan":
 		args = append(args, "--sandbox")
+	}
+	if model != "" {
+		args = append(args, "--model", model)
 	}
 	args = append(args, "-p", fullPrompt)
 	return args

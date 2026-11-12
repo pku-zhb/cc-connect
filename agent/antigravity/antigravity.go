@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,6 +31,7 @@ func init() {
 type Agent struct {
 	workDir      string
 	model        string
+	effort       string // selected tier for models without an explicit one
 	mode         string
 	cmd          string   // CLI binary name, default "agy"
 	cliExtraArgs []string // extra args from cmd after the binary name
@@ -49,6 +49,14 @@ func New(opts map[string]any) (core.Agent, error) {
 		workDir = "."
 	}
 	model, _ := opts["model"].(string)
+	effort, _ := opts["reasoning_effort"].(string)
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	if !isEffortTier(effort) {
+		effort = ""
+	}
+	if family, current := splitEffort(model); effort != "" && current != "" {
+		model = family + "-" + effort
+	}
 	mode, _ := opts["mode"].(string)
 	mode = normalizeMode(mode)
 	cmd, extraArgs := core.ParseCmdOpts(opts, "agy")
@@ -81,13 +89,17 @@ func New(opts map[string]any) (core.Agent, error) {
 		return nil, fmt.Errorf("antigravity: %q CLI not found in PATH, install from: https://antigravity.google/docs/cli-overview", cmd)
 	}
 
+	configEnv := core.ParseConfigEnv(opts)
+	prewarmAgyCatalog(cmd, configEnv)
+
 	return &Agent{
 		workDir:      workDir,
 		model:        model,
+		effort:       effort,
 		mode:         mode,
 		cmd:          cmd,
 		cliExtraArgs: extraArgs,
-		configEnv:    core.ParseConfigEnv(opts),
+		configEnv:    configEnv,
 		timeout:      timeout,
 		activeIdx:    -1,
 	}, nil
@@ -162,68 +174,74 @@ func (a *Agent) configuredModels() []core.ModelOption {
 	return core.GetProviderModels(a.providers, a.activeIdx)
 }
 
+// AvailableModels lists agy's native catalog (`agy models`), which is what
+// --model accepts. Configured provider models take precedence.
 func (a *Agent) AvailableModels(ctx context.Context) []core.ModelOption {
 	if models := a.configuredModels(); len(models) > 0 {
 		return models
 	}
-	if models := a.fetchModelsFromAPI(ctx); len(models) > 0 {
-		return models
-	}
-	return []core.ModelOption{
-		{Name: "gemini-3.1-pro-preview", Desc: "Gemini 3.1 Pro Preview"},
-		{Name: "gemini-3-flash-preview", Desc: "Gemini 3 Flash Preview"},
-		{Name: "gemini-2.5-pro", Desc: "Gemini 2.5 Pro"},
-		{Name: "gemini-2.5-flash", Desc: "Gemini 2.5 Flash"},
-	}
+	a.mu.RLock()
+	cmd, env := a.cmd, append([]string(nil), a.configEnv...)
+	a.mu.RUnlock()
+	return agyModelCatalog(ctx, cmd, env)
 }
 
-func (a *Agent) fetchModelsFromAPI(ctx context.Context) []core.ModelOption {
-	apiKey := os.Getenv("GEMINI_API_KEY")
-	if apiKey == "" {
-		apiKey = os.Getenv("GOOGLE_API_KEY")
-	}
-	if apiKey == "" {
-		return nil
-	}
-
-	url := "https://generativelanguage.googleapis.com/v1beta/models?key=" + apiKey
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		slog.Debug("antigravity: failed to fetch models", "error", err)
-		return nil
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-	if resp.StatusCode != http.StatusOK {
-		return nil
-	}
-
-	var result struct {
-		Models []struct {
-			Name        string `json:"name"`
-			DisplayName string `json:"displayName"`
-		} `json:"models"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil
-	}
-
-	var models []core.ModelOption
-	for _, m := range result.Models {
-		id := strings.TrimPrefix(m.Name, "models/")
-		if !strings.HasPrefix(id, "gemini-") {
-			continue
+// ResolveModel validates a /model selection against the catalog and expands
+// short forms such as "argon" or "argon high" to a full model ID.
+func (a *Agent) ResolveModel(ctx context.Context, input string) (string, error) {
+	models := a.AvailableModels(ctx)
+	if len(a.configuredModels()) > 0 {
+		for _, m := range models {
+			if strings.EqualFold(m.Name, strings.TrimSpace(input)) {
+				return m.Name, nil
+			}
 		}
-		models = append(models, core.ModelOption{Name: id, Desc: m.DisplayName})
 	}
-	sort.Slice(models, func(i, j int) bool { return models[i].Name > models[j].Name })
-	return models
+	return resolveAgyModel(models, input, a.GetReasoningEffort())
+}
+
+// GetReasoningEffort reports the tier encoded in the current model ID.
+func (a *Agent) GetReasoningEffort() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if _, effort := splitEffort(a.model); effort != "" {
+		return effort
+	}
+	return a.effort
+}
+
+func (a *Agent) AvailableReasoningEfforts() []string {
+	return append([]string(nil), agyEffortTiers...)
+}
+
+// SetReasoningEffort switches the current model to the same family's tier.
+func (a *Agent) SetReasoningEffort(effort string) {
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	if !isEffortTier(effort) {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.effort = effort
+	if family, current := splitEffort(a.model); current != "" {
+		a.model = family + "-" + effort
+	}
+	slog.Info("antigravity: reasoning effort changed", "reasoning_effort", effort, "model", a.model)
+}
+
+// Existing sessions read the agent's model on every turn.
+func (*Agent) SupportsLiveReasoningEffort() bool { return true }
+
+// effectiveModel is the model passed to agy for the next turn.
+func (a *Agent) effectiveModel() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.activeIdx >= 0 && a.activeIdx < len(a.providers) {
+		if m := a.providers[a.activeIdx].Model; m != "" {
+			return m
+		}
+	}
+	return a.model
 }
 
 func (a *Agent) SetSessionEnv(env []string) {
@@ -234,7 +252,6 @@ func (a *Agent) SetSessionEnv(env []string) {
 
 func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentSession, error) {
 	a.mu.Lock()
-	model := a.model
 	mode := a.mode
 	cmd := a.cmd
 	extraArgs := append([]string{}, a.cliExtraArgs...)
@@ -243,14 +260,9 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	extraEnv := append([]string(nil), a.configEnv...)
 	extraEnv = append(extraEnv, a.providerEnvLocked()...)
 	extraEnv = append(extraEnv, a.sessionEnv...)
-	if a.activeIdx >= 0 && a.activeIdx < len(a.providers) {
-		if m := a.providers[a.activeIdx].Model; m != "" {
-			model = m
-		}
-	}
 	a.mu.Unlock()
 
-	return newAntigravitySession(ctx, cmd, extraArgs, workDir, model, mode, sessionID, extraEnv, timeout)
+	return newAntigravitySession(ctx, cmd, extraArgs, workDir, a.effectiveModel, mode, sessionID, extraEnv, timeout)
 }
 
 func (a *Agent) ListSessions(_ context.Context) ([]core.AgentSessionInfo, error) {

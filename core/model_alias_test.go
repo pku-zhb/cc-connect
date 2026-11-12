@@ -29,6 +29,7 @@ func TestParseModelSwitchArgs(t *testing.T) {
 	}{
 		{name: "legacy syntax", args: []string{"gpt"}, want: "gpt", ok: true},
 		{name: "switch syntax", args: []string{"switch", "gpt"}, want: "gpt", ok: true},
+		{name: "switch with effort", args: []string{"switch", "argon", "high"}, want: "argon high", ok: true},
 		{name: "missing switch target", args: []string{"switch"}, ok: false},
 		{name: "unknown subcommand", args: []string{"list", "gpt"}, ok: false},
 	}

@@ -472,6 +472,14 @@ type ModelSwitcher interface {
 	AvailableModels(ctx context.Context) []ModelOption
 }
 
+// ModelResolver is an optional interface for agents whose CLI accepts only
+// models from a native catalog. ResolveModel validates a /model selection and
+// expands agent-specific short forms to the exact model ID; an error rejects
+// the switch with a user-facing explanation.
+type ModelResolver interface {
+	ResolveModel(ctx context.Context, input string) (string, error)
+}
+
 // ReasoningEffortSwitcher is an optional interface for agents that support
 // runtime switching of reasoning effort.
 type ReasoningEffortSwitcher interface {
