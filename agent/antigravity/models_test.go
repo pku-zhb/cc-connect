@@ -116,6 +116,9 @@ func TestAgentModelAndEffortSelection(t *testing.T) {
 	defer s.Close()
 	as := s.(*antigravitySession)
 	args := as.buildAntigravityArgs("", false, "yolo", "", as.currentModel(), "hi")
+	if !contains(args, "--dangerously-skip-permissions") || !containsPair(args, "--mode", "accept-edits") {
+		t.Fatalf("yolo must skip permissions and edit review: %v", args)
+	}
 	if !containsPair(args, "--model", "gemini-4-argon-high") {
 		t.Fatalf("--model missing: %v", args)
 	}

@@ -225,7 +225,8 @@ func (as *antigravitySession) buildAntigravityArgs(chatID string, isResume bool,
 	}
 	switch mode {
 	case "yolo":
-		args = append(args, "--dangerously-skip-permissions")
+		// Skip tool prompts and file-edit review so headless turns never block.
+		args = append(args, "--dangerously-skip-permissions", "--mode", "accept-edits")
 	case "plan":
 		args = append(args, "--sandbox")
 	}
