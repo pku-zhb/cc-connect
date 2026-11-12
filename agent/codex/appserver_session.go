@@ -150,6 +150,7 @@ type appServerSession struct {
 	model          string
 	effort         string
 	tierSource     func() string
+	effortSource   func() string
 	serviceTier    string // confirmed thread default; protected by runtimeMu
 	mode           string
 	baseURL        string
@@ -957,7 +958,7 @@ func (s *appServerSession) GetModel() string {
 func (s *appServerSession) GetReasoningEffort() string {
 	s.runtimeMu.RLock()
 	defer s.runtimeMu.RUnlock()
-	return strings.TrimSpace(s.effort)
+	return selectedReasoningEffort(s.effortSource, s.effort)
 }
 
 func (s *appServerSession) GetUsage(ctx context.Context) (*core.UsageReport, error) {

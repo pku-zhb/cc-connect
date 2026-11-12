@@ -2904,3 +2904,46 @@ func TestCUJ_A11_FastBusySelectionAppliesToQueuedTurn(t *testing.T) {
 		t.Fatal("busy command closed native session")
 	}
 }
+
+// CUJ: continue the same conversation across ultra/max/high selections, then
+// change effort during a running turn and apply it to the queued follow-up.
+func TestCUJ_A12_ReasoningSwitchPreservesConversation(t *testing.T) {
+	workspace := t.TempDir()
+	p := &stubPlatformEngine{n: "test"}
+	a := &reasoningJourneyAgent{fastTestAgent: fastTestAgent{workDir: workspace, tier: "ultra"}}
+	e := NewEngine("reasoning", a, []Platform{p}, filepath.Join(workspace, "sessions.json"), LangEnglish)
+	e.SetProjectStateStore(NewProjectStateStore(filepath.Join(workspace, "state.json")))
+	t.Cleanup(func() { _ = e.Stop() })
+	env := &cujEnv{t: t, engine: e, plat: p}
+	env.userSends("u", "remember-this-context")
+	controlWait(t, env, "ultra:remember-this-context")
+	live := a.session()
+	env.userSends("u", "/reasoning max")
+	env.userSends("u", "continue-context")
+	controlWait(t, env, "max:continue-context")
+	if live.closed.Get() || a.session() != live {
+		t.Fatal("reasoning selection restarted the native conversation")
+	}
+	// Drain snapshots from the first two completed turns.
+	<-live.started
+	<-live.started
+	env.userSends("u", "held")
+	select {
+	case <-live.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("held turn never started")
+	}
+	env.userSends("u", "/reasoning high")
+	env.userSends("u", "queued-follow-up")
+	live.events <- Event{Type: EventResult, Content: "held completed", Done: true}
+	controlWait(t, env, "high:queued-follow-up")
+	beforeHistory := len(p.getSent())
+	env.userSends("u", "/history")
+	history := strings.Join(p.getSent()[beforeHistory:], "\n")
+	if !strings.Contains(history, "remember-this-context") || !strings.Contains(history, "continue-context") || !strings.Contains(history, "queued-follow-up") {
+		t.Fatal("reasoning selection lost conversation history")
+	}
+	if live.closed.Get() || a.session() != live {
+		t.Fatal("busy reasoning selection replaced the native conversation")
+	}
+}

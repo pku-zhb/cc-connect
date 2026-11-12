@@ -10751,16 +10751,11 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 		return
 	}
 
-	switcher.SetReasoningEffort(target)
-	e.persistWorkspaceEffortOverride(interactiveKey, msg.SessionKey, agent, switcher.GetReasoningEffort())
-	e.cleanupInteractiveState(e.interactiveKeyForSessionKey(msg.SessionKey))
-
-	s := sessions.GetOrCreateActive(msg.SessionKey)
-	s.SetAgentSessionID("", "")
-	s.ClearHistory()
-	sessions.Save()
-
-	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReasoningChanged, target))
+	changedMessage := MsgReasoningChanged
+	if e.applyReasoningEffortChange(agent, sessions, interactiveKey, msg.SessionKey, target) {
+		changedMessage = MsgReasoningChangedLive
+	}
+	e.reply(p, msg.ReplyCtx, e.i18n.Tf(changedMessage, target))
 }
 
 func (e *Engine) reasoningUsage(efforts []string) string {
@@ -13126,13 +13121,7 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		}
 		for _, effort := range efforts {
 			if effort == target {
-				switcher.SetReasoningEffort(target)
-				e.persistWorkspaceEffortOverride(interactiveKey, sessionKey, agent, switcher.GetReasoningEffort())
-				e.cleanupInteractiveState(interactiveKey)
-				s := sessions.GetOrCreateActive(sessionKey)
-				s.SetAgentSessionID("", "")
-				s.ClearHistory()
-				sessions.Save()
+				e.applyReasoningEffortChange(agent, sessions, interactiveKey, sessionKey, target)
 				return
 			}
 		}

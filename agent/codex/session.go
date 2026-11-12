@@ -28,6 +28,7 @@ type codexSession struct {
 	model          string
 	effort         string
 	tierSource     func() string
+	effortSource   func() string
 	mode           string
 	baseURL        string   // provider base URL; passed as -c openai_base_url=<url>
 	modelProvider  string   // Codex model_provider name; passed as -c model_provider=<name>
@@ -342,8 +343,8 @@ func (cs *codexSession) buildExecArgs(prompt string, imagePaths []string) []stri
 	if cs.baseURL != "" {
 		args = append(args, "-c", fmt.Sprintf("openai_base_url=%q", cs.baseURL))
 	}
-	if cs.effort != "" {
-		args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%q", cs.effort))
+	if effort := selectedReasoningEffort(cs.effortSource, cs.effort); effort != "" {
+		args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%q", effort))
 	}
 
 	if isResume {
@@ -914,7 +915,7 @@ func (cs *codexSession) GetModel() string {
 }
 
 func (cs *codexSession) GetReasoningEffort() string {
-	if effort := strings.TrimSpace(cs.effort); effort != "" {
+	if effort := selectedReasoningEffort(cs.effortSource, cs.effort); effort != "" {
 		return effort
 	}
 	_, effort := cs.runtimeConfig()

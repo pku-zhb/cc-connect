@@ -469,6 +469,13 @@ type ReasoningEffortSwitcher interface {
 	AvailableReasoningEfforts() []string
 }
 
+// LiveReasoningEffortSwitcher opts into applying agent-level effort selections
+// to subsequent turns of existing sessions without restarting them.
+type LiveReasoningEffortSwitcher interface {
+	ReasoningEffortSwitcher
+	SupportsLiveReasoningEffort() bool
+}
+
 // ServiceTierSwitcher selects a workspace default for subsequent turns.
 // GetServiceTier resolves inherited defaults; a failure must not be treated as off.
 type ServiceTierSwitcher interface {
