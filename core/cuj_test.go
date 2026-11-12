@@ -2947,3 +2947,27 @@ func TestCUJ_A12_ReasoningSwitchPreservesConversation(t *testing.T) {
 		t.Fatal("busy reasoning selection replaced the native conversation")
 	}
 }
+
+// CUJ: select effort on a dormant conversation, encounter another writer,
+// inspect preserved history, then retry after the writer has exited.
+func TestCUJ_G5_ResumeConflictPreservesConversationAndRetries(t *testing.T) {
+	env, a := newResumePreservedJourney(t)
+	env.userSends("user", "/reasoning max")
+	env.userSends("user", "continue original")
+	controlWait(t, env, "no new conversation was created")
+	beforeHistory := len(env.plat.getSent())
+	env.userSends("user", "/history")
+	if !strings.Contains(strings.Join(env.plat.getSent()[beforeHistory:], "\n"), "original-context") {
+		t.Fatal("resume conflict erased the visible history")
+	}
+	a.resumeMu.Lock()
+	a.blocked = false
+	a.resumeMu.Unlock()
+	env.userSends("user", "retry original")
+	controlWait(t, env, "resumed original conversation")
+	a.resumeMu.Lock()
+	defer a.resumeMu.Unlock()
+	if len(a.attempts) != 2 || a.attempts[0] != "original-thread" || a.attempts[1] != "original-thread" {
+		t.Fatalf("resume conflict or retry created another conversation: %v", a.attempts)
+	}
+}

@@ -539,7 +539,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	if backend == "app_server" {
 		s, err := newAppServerSession(ctx, cliBin, cliExtraArgs, appServerURL, workDir, model, reasoningEffort, mode, sessionID, baseURL, provName, extraEnv, codexHome, systemPrompt, appendPrompt, a.configuredServiceTier)
 		if err != nil {
-			return nil, err
+			return nil, preserveResumeError(sessionID, err)
 		}
 		s.effortSource = a.GetReasoningEffort
 		return s, nil
@@ -550,7 +550,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 
 	s, err := newCodexSession(ctx, cliBin, cliExtraArgs, workDir, model, reasoningEffort, mode, sessionID, baseURL, extraEnv, provName, systemPrompt, appendPrompt, a.configuredServiceTier)
 	if err != nil {
-		return nil, err
+		return nil, preserveResumeError(sessionID, err)
 	}
 	s.effortSource = a.GetReasoningEffort
 	return s, nil

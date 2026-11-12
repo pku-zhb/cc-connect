@@ -2,12 +2,32 @@ package codex
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/chenhg5/cc-connect/core"
 )
+
+func TestResumeError_PreservesCodexConversationAndClassifiesWriterConflict(t *testing.T) {
+	for _, text := range []string{"thread original already has an active writer", "temporary connection failure"} {
+		cause := errors.New(text)
+		err := preserveResumeError("original-thread", cause)
+		var resumed *core.SessionResumeError
+		if !errors.As(err, &resumed) || !errors.Is(err, cause) {
+			t.Fatalf("resume error lost preservation or cause: %v", err)
+		}
+		if resumed.InUse != strings.Contains(text, "active writer") {
+			t.Fatalf("writer classification = %v for %q", resumed.InUse, text)
+		}
+		if preserveResumeError("", cause) != cause {
+			t.Fatal("fresh startup was incorrectly classified as a resume failure")
+		}
+	}
+}
 
 func TestReasoning_AppServerSwitchesUltraPerTurnWithoutReplacingThread(t *testing.T) {
 	a := &Agent{}

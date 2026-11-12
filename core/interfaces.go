@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -46,6 +47,16 @@ type Platform interface {
 
 // ErrNotSupported indicates a platform doesn't support a particular operation.
 var ErrNotSupported = errors.New("operation not supported by this platform")
+
+// SessionResumeError preserves a native conversation when it cannot currently
+// be resumed. Callers must surface the failure rather than create a new thread.
+type SessionResumeError struct {
+	Cause error
+	InUse bool
+}
+
+func (e *SessionResumeError) Error() string { return fmt.Sprintf("resume conversation: %v", e.Cause) }
+func (e *SessionResumeError) Unwrap() error { return e.Cause }
 
 // ReplyContextReconstructor is an optional interface for platforms that can
 // recreate a reply context from a session key. This is needed for cron jobs

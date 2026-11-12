@@ -204,6 +204,8 @@ const (
 	MsgExecutionStopped          MsgKey = "execution_stopped"
 	MsgSessionCloseFailed        MsgKey = "session_close_failed"
 	MsgSessionResumeUnsafe       MsgKey = "session_resume_unsafe"
+	MsgSessionResumeInUse        MsgKey = "session_resume_in_use"
+	MsgResumeFailedPreserved     MsgKey = "session_resume_failed_preserved"
 	MsgSessionCancelled          MsgKey = "session_cancelled"
 	MsgNoExecution               MsgKey = "no_execution"
 	MsgPreviousProcessing        MsgKey = "previous_processing"
@@ -801,6 +803,20 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "⚠️ 警告：已停止會話的後台進程未能確認已終止，可能仍在運行並佔用原有憑證。",
 		LangJapanese:           "⚠️ 警告：停止したセッションのバックグラウンドプロセスの終了を確認できませんでした。まだ実行中で、以前の認証情報を使用している可能性があります。",
 		LangSpanish:            "⚠️ Advertencia: no se pudo confirmar que el proceso en segundo plano de la sesión detenida haya finalizado. Podría seguir en ejecución usando sus credenciales anteriores.",
+	},
+	MsgSessionResumeInUse: {
+		LangEnglish:            "The original conversation is open in another agent process. Close that session and retry. Your conversation is preserved; no new conversation was created.",
+		LangChinese:            "原对话正被另一个 Agent 进程占用，请退出对应的终端或窗口后重试。已保留原对话，没有自动新建会话。",
+		LangTraditionalChinese: "原對話正被另一個 Agent 行程佔用，請退出對應的終端或視窗後重試。已保留原對話，沒有自動新建會話。",
+		LangJapanese:           "元の会話は別のエージェントプロセスで開かれています。該当するセッションを閉じて再試行してください。元の会話は保持され、新しい会話は作成されていません。",
+		LangSpanish:            "La conversación original está abierta en otro proceso del agente. Cierra esa sesión y vuelve a intentarlo. Se conserva la conversación; no se ha creado otra.",
+	},
+	MsgResumeFailedPreserved: {
+		LangEnglish:            "The original conversation could not be resumed and has been preserved. Retry, or use /new if you want to start a new conversation.",
+		LangChinese:            "原对话暂时无法恢复，已保留原会话。请重试；如需新建对话，请主动使用 /new。",
+		LangTraditionalChinese: "原對話暫時無法恢復，已保留原會話。請重試；如需新建對話，請主動使用 /new。",
+		LangJapanese:           "元の会話を再開できませんでしたが、会話は保持されています。再試行するか、新しい会話を始める場合は /new を使用してください。",
+		LangSpanish:            "No se pudo reanudar la conversación original y se ha conservado. Vuelve a intentarlo o usa /new para iniciar otra conversación.",
 	},
 	MsgSessionResumeUnsafe: {
 		LangEnglish:            "⚠️ The previous process could not be confirmed stopped, so this conversation was NOT resumed — a brand-new session was started instead (earlier context is not carried over). This avoids two agents acting on the same conversation.",
