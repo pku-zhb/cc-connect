@@ -7875,9 +7875,26 @@ func (e *Engine) cmdSwitch(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgError, err))
 		return
 	}
+	allSessions := agentSessions
 	agentSessions = e.applySessionFilter(agentSessions, sessions, msg.SessionKey)
 
 	matched := e.matchSession(agentSessions, sessions, query)
+	if matched == nil {
+		// A full session ID may name a session another conversation used
+		// before. Move it here unless that conversation is using it now.
+		for i := range allSessions {
+			if allSessions[i].ID != query {
+				continue
+			}
+			if sessions.AgentSessionActiveElsewhere(query, msg.SessionKey) {
+				e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgSwitchActiveElsewhere), query))
+				return
+			}
+			sessions.ReleaseAgentSession(query, msg.SessionKey)
+			matched = &allSessions[i]
+			break
+		}
+	}
 	if matched == nil {
 		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgSwitchNoMatch), query))
 		return

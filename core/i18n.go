@@ -552,9 +552,10 @@ const (
 	MsgDeleteModeDeletingBody   MsgKey = "delete_mode_deleting_body"
 	MsgDeleteModeMissingSession MsgKey = "delete_mode_missing_session"
 
-	MsgSwitchSuccess   MsgKey = "switch_success"
-	MsgSwitchNoMatch   MsgKey = "switch_no_match"
-	MsgSwitchNoSession MsgKey = "switch_no_session"
+	MsgSwitchSuccess         MsgKey = "switch_success"
+	MsgSwitchNoMatch         MsgKey = "switch_no_match"
+	MsgSwitchActiveElsewhere MsgKey = "switch_active_elsewhere"
+	MsgSwitchNoSession       MsgKey = "switch_no_session"
 
 	MsgCommandTimeout MsgKey = "command_timeout"
 
@@ -3381,6 +3382,10 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "✅ 已切換到：%s（%s，%d 則訊息）",
 		LangJapanese:           "✅ 切り替え：%s（%s、%d件）",
 		LangSpanish:            "✅ Cambiado a: %s (%s, %d mensajes)",
+	},
+	MsgSwitchActiveElsewhere: {
+		LangEnglish: "❌ Session %q is active in another conversation; run /new there first",
+		LangChinese: "❌ 会话 %q 正在另一个对话中使用；请先在那里执行 /new",
 	},
 	MsgSwitchNoMatch: {
 		LangEnglish:            "❌ No session matching %q",

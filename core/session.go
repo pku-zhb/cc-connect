@@ -757,6 +757,67 @@ func (sm *SessionManager) deleteByIDLocked(id string) {
 	}
 }
 
+// AgentSessionActiveElsewhere reports whether agentSID is the current agent
+// session of another conversation's active session.
+func (sm *SessionManager) AgentSessionActiveElsewhere(agentSID, userKey string) bool {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	for key, sid := range sm.activeSession {
+		if key == userKey {
+			continue
+		}
+		s, ok := sm.sessions[sid]
+		if !ok {
+			continue
+		}
+		s.mu.Lock()
+		current := s.AgentSessionID
+		s.mu.Unlock()
+		if current == agentSID {
+			return true
+		}
+	}
+	return false
+}
+
+// ReleaseAgentSession drops agentSID from other conversations' inactive
+// sessions and past IDs so ownership can move to userKey. Callers must first
+// check AgentSessionActiveElsewhere.
+func (sm *SessionManager) ReleaseAgentSession(agentSID, userKey string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	changed := false
+	for key, ids := range sm.userSessions {
+		if key == userKey {
+			continue
+		}
+		for _, sid := range ids {
+			s, ok := sm.sessions[sid]
+			if !ok {
+				continue
+			}
+			s.mu.Lock()
+			if s.AgentSessionID == agentSID && sm.activeSession[key] != sid {
+				s.AgentSessionID = ""
+				changed = true
+			}
+			kept := s.PastAgentSessionIDs[:0]
+			for _, past := range s.PastAgentSessionIDs {
+				if past == agentSID {
+					changed = true
+					continue
+				}
+				kept = append(kept, past)
+			}
+			s.PastAgentSessionIDs = kept
+			s.mu.Unlock()
+		}
+	}
+	if changed {
+		sm.saveLocked()
+	}
+}
+
 // Save persists current state to disk. Safe to call from outside (e.g. after message processing).
 func (sm *SessionManager) Save() {
 	sm.mu.RLock()
