@@ -7164,6 +7164,21 @@ func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsNoSession))
 		return
 	}
+	// Agents with a native steering call (Codex turn/steer) add the text to
+	// the running turn; Send would start a separate turn instead.
+	if steerer, ok := state.agentSession.(UserInputSteerer); ok {
+		steered, err := steerer.SteerUserInput(text)
+		if err != nil {
+			slog.Error("ps: steer failed", "error", err)
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsSendFailed))
+			return
+		}
+		if steered {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsSent))
+			return
+		}
+		// No active turn on the agent side: fall through.
+	}
 	if serial, ok := state.agentSession.(MidTurnInputSession); ok && !serial.AcceptsMidTurnInput() {
 		// The agent cannot take input mid-turn: deliver the supplement as
 		// the next turn instead of running a second turn concurrently.
@@ -17542,7 +17557,12 @@ func (e *Engine) interactiveKeyForSessionKeyLocked(sessionKey string) string {
 	}
 	if channelKey := e.extractWorkspaceChannelKey(sessionKey); channelKey != "" {
 		if b, _, usable := e.lookupEffectiveWorkspaceBinding(channelKey); usable {
-			return normalizeWorkspacePath(b.Workspace) + ":" + sessionKey
+			// Honour a /dir override exactly as workspaceContext does for
+			// incoming messages; otherwise commands (/ps, /stop, ...) look
+			// up "<bound workspace>:<key>" while the running turn lives
+			// under "<override dir>:<key>".
+			workspace := normalizeWorkspacePath(b.Workspace)
+			return e.resolveChannelWorkDir(workspace, workspace+":"+sessionKey) + ":" + sessionKey
 		}
 	}
 	if found := findInteractiveKeyInStatesLocked(e.interactiveStates, sessionKey); found != "" {
