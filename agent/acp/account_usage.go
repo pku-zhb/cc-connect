@@ -70,6 +70,19 @@ func (s *acpSession) absorbAccountUsage(raw json.RawMessage) {
 }
 
 func (s *acpSession) GetUsage(ctx context.Context) (*core.UsageReport, error) {
+	switch s.usageBackend {
+	case usageBackendMuse:
+		return s.museAccountUsage(ctx)
+	case usageBackendAgy:
+		return s.agyAccountUsage(ctx)
+	case usageBackendNone:
+		return nil, fmt.Errorf("acp: usage backend is not configured (set usage_backend to muse or agy)")
+	default:
+		return nil, fmt.Errorf("acp: unsupported usage backend %q (set usage_backend to muse or agy)", s.usageBackend)
+	}
+}
+
+func (s *acpSession) museAccountUsage(ctx context.Context) (*core.UsageReport, error) {
 	// The adapter can emit its initial quota immediately after session/load's
 	// response. Give that first observation a bounded opportunity to arrive.
 	if s.accountUsageReady != nil {
@@ -78,29 +91,15 @@ func (s *acpSession) GetUsage(ctx context.Context) (*core.UsageReport, error) {
 		select {
 		case <-s.accountUsageReady:
 		case <-ctx.Done():
-			return nil, fmt.Errorf("acp: account usage: %w", ctx.Err())
+			return nil, fmt.Errorf("acp: muse account usage: %w", ctx.Err())
 		case <-timer.C:
 		}
 	}
 	s.controlsMu.RLock()
-	defer s.controlsMu.RUnlock()
-	if s.accountUsage == nil {
+	report := s.accountUsage
+	s.controlsMu.RUnlock()
+	if report == nil {
 		return nil, nil
 	}
-	result := *s.accountUsage
-	result.Buckets = append([]core.UsageBucket(nil), result.Buckets...)
-	for i := range result.Buckets {
-		result.Buckets[i].Windows = append([]core.UsageWindow(nil), result.Buckets[i].Windows...)
-		for j := range result.Buckets[i].Windows {
-			window := &result.Buckets[i].Windows[j]
-			if window.ResetAtUnix > 0 {
-				remaining := window.ResetAtUnix - time.Now().Unix()
-				if remaining < 0 {
-					remaining = 0
-				}
-				window.ResetAfterSeconds = int(remaining)
-			}
-		}
-	}
-	return &result, nil
+	return usageReportWithCountdowns(report, time.Now()), nil
 }

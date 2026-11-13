@@ -71,6 +71,13 @@ type acpSession struct {
 	accountUsage      *core.UsageReport
 	accountUsageReady chan struct{}
 	accountUsageOnce  sync.Once
+	usageBackend      usageBackend
+	command           string
+	extraEnv          []string
+	displayName       string
+	cliRunner         usageCommandRunner
+	agyUsage          *core.UsageReport
+	agyUsageAt        time.Time
 
 	// promptInFlight tracks active session/prompt RPCs. Text chunks that
 	// arrive while no prompt is in flight belong to background work (kimi
@@ -106,8 +113,10 @@ type acpSessionConfig struct {
 	authMethod      string
 	initialModel    string
 	initialEffort   string
-	initialMode     string           // if non-empty, applied via session/set_mode after session/new
-	midTurnInput    string           // normalized mid_turn_input mode
+	initialMode     string // if non-empty, applied via session/set_mode after session/new
+	midTurnInput    string // normalized mid_turn_input mode
+	usageBackend    usageBackend
+	displayName     string
 	callbacks       sessionCallbacks // may be nil
 }
 
@@ -129,6 +138,10 @@ func newACPSession(ctx context.Context, cfg acpSessionConfig) (*acpSession, erro
 		accountUsageReady: make(chan struct{}),
 		callbacks:         cfg.callbacks,
 		midTurnInput:      cfg.midTurnInput,
+		usageBackend:      cfg.usageBackend,
+		command:           cfg.command,
+		extraEnv:          append([]string(nil), cfg.extraEnv...),
+		displayName:       cfg.displayName,
 		activeTools:       make(map[string]struct{}),
 	}
 	s.turnCond = sync.NewCond(&s.turnMu)

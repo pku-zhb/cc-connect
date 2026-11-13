@@ -36,6 +36,7 @@ type Agent struct {
 	midTurnInput    string
 	model           string
 	reasoningEffort string
+	usageBackend    usageBackend
 
 	// listUnsupported caches a negative result after we probe the agent
 	// for sessionCapabilities.list once. Eliminates spawn cost on
@@ -70,7 +71,10 @@ var _ sessionCallbacks = (*Agent)(nil)
 // New builds an acp agent from project options.
 // Required: options["command"] — executable name or path for the ACP agent.
 // Optional: options["args"], options["env"], options["auth_method"],
-// options["display_name"], options["mode"].
+// options["display_name"], options["mode"], options["usage_backend"].
+// usage_backend is "muse" (adapter _meta observations) or "agy" (agy CLI
+// /usage). When omitted, the command and display_name are matched as
+// identities; unknown agents leave it unset and /usage reports an error.
 func New(opts map[string]any) (core.Agent, error) {
 	workDir, _ := opts["work_dir"].(string)
 	if workDir == "" {
@@ -105,6 +109,11 @@ func New(opts map[string]any) (core.Agent, error) {
 
 	model, _ := opts["model"].(string)
 	effort, _ := opts["reasoning_effort"].(string)
+	rawUsageBackend, _ := opts["usage_backend"].(string)
+	usageBackend, err := resolveUsageBackend(rawUsageBackend, cmdStr, displayName)
+	if err != nil {
+		return nil, err
+	}
 	return &Agent{
 		workDir:      workDir,
 		cmd:          cmdStr,
@@ -117,6 +126,7 @@ func New(opts map[string]any) (core.Agent, error) {
 		mode:         mode,
 		midTurnInput: midTurn,
 		model:        model, reasoningEffort: effort,
+		usageBackend: usageBackend,
 	}, nil
 }
 
@@ -222,6 +232,9 @@ func (a *Agent) WorkspaceAgentOptions() map[string]any {
 	if a.midTurnInput != "" {
 		opts["mid_turn_input"] = a.midTurnInput
 	}
+	if a.usageBackend != usageBackendNone {
+		opts["usage_backend"] = string(a.usageBackend)
+	}
 	if len(a.args) > 0 {
 		opts["args"] = append([]string(nil), a.args...)
 	}
@@ -257,6 +270,8 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	pendingEffort := a.reasoningEffort
 	pendingMode := a.mode
 	midTurn := a.midTurnInput
+	usageBackend := a.usageBackend
+	displayName := a.displayName
 	extra := append([]string(nil), a.extraEnv...)
 	extra = append(extra, a.sessionEnv...)
 	a.mu.RUnlock()
@@ -270,6 +285,8 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 		authMethod:      authMethod,
 		initialMode:     pendingMode,
 		midTurnInput:    midTurn,
+		usageBackend:    usageBackend,
+		displayName:     displayName,
 		initialModel:    pendingModel, initialEffort: pendingEffort,
 		callbacks: a,
 	})

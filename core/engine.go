@@ -9568,18 +9568,109 @@ func formatUsageReport(report *UsageReport, lang Language) string {
 }
 
 func formatUsageBlocks(report *UsageReport, lang Language) string {
-	primary, secondary := selectUsageWindows(report)
 	var sections []string
-	if primary != nil {
-		sections = append(sections, formatUsageBlock(lang, primary))
+	showBucketNames := report != nil && len(report.Buckets) > 1
+	if report != nil {
+		for i := range report.Buckets {
+			windows := usageWindowsForDisplay(&report.Buckets[i])
+			if len(windows) == 0 {
+				continue
+			}
+			var b strings.Builder
+			if showBucketNames && strings.TrimSpace(report.Buckets[i].Name) != "" {
+				b.WriteString(report.Buckets[i].Name)
+				b.WriteString("\n")
+			}
+			for j, window := range windows {
+				if j > 0 {
+					b.WriteString("\n\n")
+				}
+				b.WriteString(formatUsageBlock(lang, window))
+			}
+			sections = append(sections, b.String())
+		}
 	}
-	if secondary != nil {
-		sections = append(sections, formatUsageBlock(lang, secondary))
+	if line := formatUsageCredits(report, lang); line != "" {
+		sections = append(sections, line)
 	}
 	if len(sections) == 0 {
 		return ""
 	}
 	return "\n\n" + strings.Join(sections, "\n\n")
+}
+
+func usageWindowsForDisplay(bucket *UsageBucket) []*UsageWindow {
+	if bucket == nil || len(bucket.Windows) == 0 {
+		return nil
+	}
+	var primary, secondary *UsageWindow
+	seen := make(map[int]struct{})
+	for i := range bucket.Windows {
+		window := &bucket.Windows[i]
+		switch window.WindowSeconds {
+		case 18000:
+			if primary == nil {
+				primary = window
+				seen[i] = struct{}{}
+			}
+		case 604800:
+			if secondary == nil {
+				secondary = window
+				seen[i] = struct{}{}
+			}
+		}
+	}
+	if primary == nil {
+		for i := range bucket.Windows {
+			if _, ok := seen[i]; ok {
+				continue
+			}
+			if secondary != &bucket.Windows[i] {
+				primary = &bucket.Windows[i]
+				seen[i] = struct{}{}
+			}
+			break
+		}
+	}
+	var out []*UsageWindow
+	if primary != nil {
+		out = append(out, primary)
+	}
+	if secondary != nil && secondary != primary {
+		out = append(out, secondary)
+	}
+	for i := range bucket.Windows {
+		if _, ok := seen[i]; ok {
+			continue
+		}
+		out = append(out, &bucket.Windows[i])
+	}
+	return out
+}
+
+func formatUsageCredits(report *UsageReport, lang Language) string {
+	if report == nil || report.Credits == nil {
+		return ""
+	}
+	value := strings.TrimSpace(report.Credits.Balance)
+	if report.Credits.Unlimited {
+		switch lang {
+		case LangChinese, LangTraditionalChinese:
+			value = "不限"
+		case LangJapanese:
+			value = "無制限"
+		case LangSpanish:
+			value = "ilimitados"
+		default:
+			value = "unlimited"
+		}
+	} else if value == "" {
+		if report.Credits.HasCredits {
+			return ""
+		}
+		value = "0"
+	}
+	return "Credits" + usageColon(lang) + value
 }
 
 func usageObservedLabel(lang Language) string {
@@ -9656,7 +9747,13 @@ func formatUsageBlock(lang Language, window *UsageWindow) string {
 		remaining = 0
 	}
 	var sb strings.Builder
-	sb.WriteString(usageWindowLabel(lang, window.WindowSeconds))
+	if window.WindowSeconds > 0 {
+		sb.WriteString(usageWindowLabel(lang, window.WindowSeconds))
+	} else if strings.TrimSpace(window.Name) != "" {
+		sb.WriteString(window.Name)
+	} else {
+		sb.WriteString(usageWindowLabel(lang, window.WindowSeconds))
+	}
 	sb.WriteString("\n")
 	sb.WriteString(usageRemainingLabel(lang))
 	sb.WriteString(usageColon(lang))

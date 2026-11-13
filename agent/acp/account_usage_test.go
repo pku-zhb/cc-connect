@@ -24,6 +24,7 @@ func quotaFixture(observed int64, used int) map[string]any {
 
 func TestAccountUsage_DecodesQuotaInsteadOfContext(t *testing.T) {
 	s, _, _ := newTestSession(t, nil)
+	s.usageBackend = usageBackendMuse
 	s.onNotification("session/update", quotaUpdate("test-session-id", "usage_update", quotaFixture(1900000000123, 23)))
 	report, err := s.GetUsage(context.Background())
 	if err != nil || report == nil {
@@ -53,6 +54,7 @@ func TestAccountUsage_DecodesQuotaInsteadOfContext(t *testing.T) {
 
 func TestAccountUsage_MetadataOnlyZeroStaleAndClear(t *testing.T) {
 	s, _, _ := newTestSession(t, nil)
+	s.usageBackend = usageBackendMuse
 	s.onNotification("session/update", quotaUpdate("test-session-id", "session_info_update", quotaFixture(1900000000000, 0)))
 	report, _ := s.GetUsage(context.Background())
 	if report == nil || report.Buckets[0].Windows[0].UsedPercent != 0 {
@@ -78,6 +80,7 @@ func TestAccountUsage_MetadataOnlyZeroStaleAndClear(t *testing.T) {
 
 func TestAccountUsage_ContextAndIncompleteMetadataAreNotQuota(t *testing.T) {
 	s, _, _ := newTestSession(t, nil)
+	s.usageBackend = usageBackendMuse
 	s.onNotification("session/update", []byte(`{"sessionId":"test-session-id","update":{"sessionUpdate":"usage_update","used":4242,"size":10000,"cost":{"amount":1,"currency":"USD"}}}`))
 	bad := quotaFixture(1900000000000, 23)
 	delete(bad, "weekly")
@@ -90,6 +93,7 @@ func TestAccountUsage_ContextAndIncompleteMetadataAreNotQuota(t *testing.T) {
 
 func TestAccountUsage_WaitsForInitialPostLoadObservation(t *testing.T) {
 	s, _, _ := newTestSession(t, nil)
+	s.usageBackend = usageBackendMuse
 	s.accountUsageReady = make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
