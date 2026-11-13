@@ -33,6 +33,7 @@ type Agent struct {
 	// When set, StartSession applies it via session/set_mode right after
 	// session/new. Empty means "use whatever the agent selects by default".
 	mode            string
+	midTurnInput    string
 	model           string
 	reasoningEffort string
 
@@ -96,6 +97,12 @@ func New(opts map[string]any) (core.Agent, error) {
 	mode, _ := opts["mode"].(string)
 	mode = strings.TrimSpace(mode)
 
+	rawMidTurn, _ := opts["mid_turn_input"].(string)
+	midTurn, err := normalizeMidTurnInput(rawMidTurn)
+	if err != nil {
+		return nil, err
+	}
+
 	model, _ := opts["model"].(string)
 	effort, _ := opts["reasoning_effort"].(string)
 	return &Agent{
@@ -108,6 +115,7 @@ func New(opts map[string]any) (core.Agent, error) {
 		authMethod:   authMethod,
 		displayName:  displayName,
 		mode:         mode,
+		midTurnInput: midTurn,
 		model:        model, reasoningEffort: effort,
 	}, nil
 }
@@ -211,6 +219,9 @@ func (a *Agent) WorkspaceAgentOptions() map[string]any {
 	if a.mode != "" {
 		opts["mode"] = a.mode
 	}
+	if a.midTurnInput != "" {
+		opts["mid_turn_input"] = a.midTurnInput
+	}
 	if len(a.args) > 0 {
 		opts["args"] = append([]string(nil), a.args...)
 	}
@@ -245,6 +256,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	pendingModel := a.model
 	pendingEffort := a.reasoningEffort
 	pendingMode := a.mode
+	midTurn := a.midTurnInput
 	extra := append([]string(nil), a.extraEnv...)
 	extra = append(extra, a.sessionEnv...)
 	a.mu.RUnlock()
@@ -257,6 +269,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 		resumeSessionID: sessionID,
 		authMethod:      authMethod,
 		initialMode:     pendingMode,
+		midTurnInput:    midTurn,
 		initialModel:    pendingModel, initialEffort: pendingEffort,
 		callbacks: a,
 	})

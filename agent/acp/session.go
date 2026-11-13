@@ -38,6 +38,16 @@ type acpSession struct {
 
 	sendMu sync.Mutex
 
+	// Mid-turn input (see mid_turn.go). outstanding counts session/prompt
+	// calls belonging to the current logical turn; activeTools holds tool
+	// calls still running.
+	midTurnInput string
+	interjectMu  sync.Mutex
+	turnMu       sync.Mutex
+	turnCond     *sync.Cond
+	outstanding  int
+	activeTools  map[string]struct{}
+
 	permMu   sync.Mutex
 	permByID map[string]permState
 
@@ -97,6 +107,7 @@ type acpSessionConfig struct {
 	initialModel    string
 	initialEffort   string
 	initialMode     string           // if non-empty, applied via session/set_mode after session/new
+	midTurnInput    string           // normalized mid_turn_input mode
 	callbacks       sessionCallbacks // may be nil
 }
 
@@ -117,7 +128,10 @@ func newACPSession(ctx context.Context, cfg acpSessionConfig) (*acpSession, erro
 		acpSessID:         cfg.resumeSessionID,
 		accountUsageReady: make(chan struct{}),
 		callbacks:         cfg.callbacks,
+		midTurnInput:      cfg.midTurnInput,
+		activeTools:       make(map[string]struct{}),
 	}
+	s.turnCond = sync.NewCond(&s.turnMu)
 	s.alive.Store(true)
 
 	cmd := exec.CommandContext(sessionCtx, cfg.command, cfg.args...)
@@ -481,6 +495,7 @@ func (s *acpSession) onNotification(method string, params json.RawMessage) {
 		return
 	}
 	s.cacheToolCallInput(params)
+	s.trackToolActivity(params)
 	toolName := s.resolveToolCallName(params)
 	sid := s.currentACPSessionID()
 	// Debug log to capture raw session/update JSON for troubleshooting vendor compatibility
@@ -717,47 +732,62 @@ func (s *acpSession) Send(prompt string, messageID string, images []core.ImageAt
 		return fmt.Errorf("acp: session closed")
 	}
 
-	s.sendMu.Lock()
-	defer s.sendMu.Unlock()
-
 	filePaths := core.SaveFilesToDisk(s.workDir, messageID, files)
 	prompt = core.AppendFileRefs(prompt, filePaths)
 	if len(images) > 0 {
 		prompt = s.appendImageRefs(prompt, images)
 	}
-
-	sid := s.currentACPSessionID()
-	if sid == "" {
+	if s.currentACPSessionID() == "" {
 		return fmt.Errorf("acp: no agent session id")
 	}
 
-	promptBlocks := []any{
-		map[string]any{"type": "text", "text": prompt},
+	if s.midTurnInput != midTurnQueue && s.beginPrompt() {
+		// A turn is running: deliver this as mid-turn input without
+		// blocking the caller (/ps replies right away).
+		go s.interject(prompt)
+		return nil
 	}
+
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+	return s.runPrompt(prompt)
+}
+
+// runPrompt sends one session/prompt and settles it. The turn's result (or
+// error) is emitted only by the prompt that ends the logical turn.
+func (s *acpSession) runPrompt(prompt string) error {
+	sid := s.currentACPSessionID()
 	params := map[string]any{
 		"sessionId": sid,
-		"prompt":    promptBlocks,
+		"prompt":    []any{map[string]any{"type": "text", "text": prompt}},
 	}
 
 	slog.Debug("acp: sending session/prompt", "session_id", sid, "prompt_len", len(prompt))
 	s.promptInFlight.Add(1)
 	res, err := s.tr.call(s.ctx, "session/prompt", params)
+	last := s.finishPrompt()
 	if err != nil {
 		s.promptInFlight.Add(-1)
+		if !last {
+			slog.Info("acp: superseded session/prompt ended with error", "session_id", sid, "error", err)
+			return nil
+		}
 		s.emit(core.Event{Type: core.EventError, Error: err})
 		return fmt.Errorf("acp: session/prompt: %w", err)
 	}
-	slog.Debug("acp: session/prompt response", "session_id", sid, "response_len", len(res), "response", string(res))
+	slog.Debug("acp: session/prompt response", "session_id", sid, "response_len", len(res), "response", string(res), "ends_turn", last)
 
 	// Text was streamed via session/update; engine aggregates EventText.
 	// Keep the in-flight mark until after EventResult is queued so a text
 	// chunk racing in from the read loop is not mistaken for out-of-turn
 	// background output.
-	s.emit(core.Event{
-		Type:      core.EventResult,
-		SessionID: sid,
-		Done:      true,
-	})
+	if last {
+		s.emit(core.Event{
+			Type:      core.EventResult,
+			SessionID: sid,
+			Done:      true,
+		})
+	}
 	s.promptInFlight.Add(-1)
 	return nil
 }
@@ -851,10 +881,6 @@ func (s *acpSession) CancelTurn() error {
 	})
 }
 
-// AcceptsMidTurnInput reports false: session/prompt blocks until the turn
-// ends, so input arriving mid-turn is queued by the engine as the next turn.
-func (s *acpSession) AcceptsMidTurnInput() bool { return false }
-
 func (s *acpSession) Alive() bool {
 	return s.alive.Load()
 }
@@ -862,6 +888,9 @@ func (s *acpSession) Alive() bool {
 func (s *acpSession) Close() error {
 	s.alive.Store(false)
 	s.cancel()
+	s.turnMu.Lock()
+	s.turnCond.Broadcast()
+	s.turnMu.Unlock()
 	if s.cmd != nil && s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()
 	}
