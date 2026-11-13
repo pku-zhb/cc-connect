@@ -191,6 +191,11 @@ func (s *acpSession) applyInitialConfig(model, effort string) error {
 		}
 		option := s.configForCategory(setting.category)
 		if option == nil {
+			// Orchestrator (and similar fixed-config models) omit thought_level.
+			// A leftover effort must not fail session start or /effort.
+			if setting.category == "thought_level" {
+				continue
+			}
 			return fmt.Errorf("acp: saved %s setting is not supported", setting.category)
 		}
 		if option.CurrentValue == setting.value {

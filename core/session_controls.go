@@ -181,6 +181,9 @@ func (e *Engine) persistSessionDefaults(agent Agent, key, sessionKey string, opt
 	if option := sessionConfigForCategory(options, "thought_level"); option != nil {
 		effort = option.CurrentValue
 		e.projectState.SetWorkspaceReasoningOverride(workspace, effort)
+	} else {
+		// Drop a stale effort when the current model has a fixed config.
+		e.projectState.SetWorkspaceReasoningOverride(workspace, "")
 	}
 	e.projectState.Save()
 	if defaults, ok := agent.(interface{ SetSessionConfigDefaults(string, string) }); ok {
@@ -206,6 +209,14 @@ func (e *Engine) applyWorkspaceSessionConfig(live AgentSession, agent Agent, key
 		}
 		option := sessionConfigForCategory(cfg.ConfigOptions(), setting.category)
 		if option == nil {
+			if setting.category == "thought_level" {
+				e.projectState.SetWorkspaceReasoningOverride(workspace, "")
+				e.projectState.Save()
+				if defaults, ok := agent.(interface{ SetSessionConfigDefaults(string, string) }); ok {
+					defaults.SetSessionConfigDefaults(e.projectState.WorkspaceModelOverride(workspace), "")
+				}
+				continue
+			}
 			return fmt.Errorf("saved %s setting is unsupported", setting.category)
 		}
 		if option.CurrentValue == setting.value {

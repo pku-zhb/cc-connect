@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -186,5 +187,139 @@ func TestSessionUsageCommand_AccountUnavailableNeverFallsBackToContext(t *testin
 	got := p.getSent()
 	if len(got) != 1 || got[0] != e.i18n.T(MsgAccountUsageUnavailable) {
 		t.Fatalf("missing quota response=%q", got)
+	}
+}
+
+// orchestratorControlSession models agy: Orchestrator omits thought_level.
+type orchestratorControlSession struct {
+	*cujAgentSession
+	configMu      sync.Mutex
+	model, effort string
+	effortSets    int
+}
+
+func (s *orchestratorControlSession) ConfigOptions() []SessionConfigOption {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	options := []SessionConfigOption{
+		{ID: "model", Name: "Model", Category: "model", CurrentValue: s.model, Options: []SessionConfigValue{
+			{Value: "gemini-4-hydrogen", Name: "Gemini 4 Hydrogen"},
+			{Value: "gemini-pro-orchestrator", Name: "Orchestrator (Carbon)"},
+		}},
+	}
+	if s.model != "gemini-pro-orchestrator" {
+		options = append(options, SessionConfigOption{
+			ID: "thought_level", Name: "Thinking Level", Category: "thought_level", CurrentValue: s.effort,
+			Options: []SessionConfigValue{{Value: "low"}, {Value: "medium"}, {Value: "high"}},
+		})
+	}
+	return options
+}
+
+func (s *orchestratorControlSession) SetConfigOption(_ context.Context, id, value string) error {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	switch id {
+	case "model":
+		if value != "gemini-4-hydrogen" && value != "gemini-pro-orchestrator" {
+			return fmt.Errorf("unsupported model")
+		}
+		s.model = value
+		return nil
+	case "thought_level":
+		s.effortSets++
+		if s.model == "gemini-pro-orchestrator" {
+			return fmt.Errorf("thought_level is not supported")
+		}
+		s.effort = value
+		return nil
+	default:
+		return fmt.Errorf("unsupported selection")
+	}
+}
+
+type orchestratorControlAgent struct {
+	stubAgent
+	workDir       string
+	mu            sync.Mutex
+	model, effort string
+	session       *orchestratorControlSession
+}
+
+func (*orchestratorControlAgent) UsesSessionControls() bool { return true }
+func (a *orchestratorControlAgent) GetWorkDir() string      { return a.workDir }
+func (a *orchestratorControlAgent) SetSessionConfigDefaults(model, effort string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.model = model
+	a.effort = effort
+}
+func (a *orchestratorControlAgent) StartSession(context.Context, string) (AgentSession, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s := &orchestratorControlSession{cujAgentSession: newCUJAgentSession(), model: a.model, effort: a.effort}
+	a.session = s
+	return s, nil
+}
+
+func TestOrchestratorEffortIsNotAdjustable(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "agy-orchestrator-carbon")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateFile := filepath.Join(root, "state.json")
+	store := NewProjectStateStore(stateFile)
+	store.SetWorkspaceModelOverride(normalizeWorkspacePath(workspace), "gemini-pro-orchestrator")
+	store.SetWorkspaceReasoningOverride(normalizeWorkspacePath(workspace), "medium")
+	store.Save()
+
+	p := &stubPlatformEngine{n: "test"}
+	a := &orchestratorControlAgent{workDir: workspace, model: "gemini-pro-orchestrator", effort: "medium"}
+	e := NewEngine("orchestrator", a, []Platform{p}, filepath.Join(workspace, "sessions.json"), LangEnglish)
+	e.SetProjectStateStore(NewProjectStateStore(stateFile))
+	t.Cleanup(func() { _ = e.Stop() })
+
+	msg := &Message{SessionKey: "test:user", ReplyCtx: "ctx"}
+	e.cmdReasoning(p, msg, nil)
+	got := p.getSent()
+	if len(got) != 1 || got[0] != e.i18n.T(MsgReasoningNotSupported) {
+		t.Fatalf("/reasoning reply=%q", got)
+	}
+	if a.session == nil {
+		t.Fatal("session was not started")
+	}
+	if a.session.effortSets != 0 {
+		t.Fatalf("bridge tried to set effort %d times", a.session.effortSets)
+	}
+	if got := e.projectState.WorkspaceReasoningOverride(normalizeWorkspacePath(workspace)); got != "" {
+		t.Fatalf("stale effort not cleared: %q", got)
+	}
+	if a.effort != "" {
+		t.Fatalf("agent default effort not cleared: %q", a.effort)
+	}
+}
+
+func TestPersistSessionDefaults_ClearsEffortWhenThoughtLevelOmitted(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "ws")
+	stateFile := filepath.Join(root, "state.json")
+	a := &orchestratorControlAgent{workDir: workspace, model: "gemini-4-hydrogen", effort: "high"}
+	e := NewEngine("orchestrator", a, nil, "", LangEnglish)
+	e.SetProjectStateStore(NewProjectStateStore(stateFile))
+	e.projectState.SetWorkspaceModelOverride(normalizeWorkspacePath(workspace), "gemini-4-hydrogen")
+	e.projectState.SetWorkspaceReasoningOverride(normalizeWorkspacePath(workspace), "high")
+	e.projectState.Save()
+
+	s := &orchestratorControlSession{cujAgentSession: newCUJAgentSession(), model: "gemini-pro-orchestrator", effort: "high"}
+	e.persistSessionDefaults(a, "", "test:user", s.ConfigOptions())
+	if got := e.projectState.WorkspaceModelOverride(normalizeWorkspacePath(workspace)); got != "gemini-pro-orchestrator" {
+		t.Fatalf("model=%q", got)
+	}
+	if got := e.projectState.WorkspaceReasoningOverride(normalizeWorkspacePath(workspace)); got != "" {
+		t.Fatalf("effort override kept: %q", got)
+	}
+	if a.effort != "" {
+		t.Fatalf("defaults effort=%q", a.effort)
 	}
 }

@@ -150,3 +150,68 @@ func TestSessionUsage_MissingDoesNotInventZero(t *testing.T) {
 		t.Fatal("metadata-only frame invented usage")
 	}
 }
+
+const orchestratorOnlyFixture = `{"configOptions":[ {"id":"engine-choice","name":"Engine","category":"model","type":"select","currentValue":"gemini-pro-orchestrator","options":[{"value":"gemini-4-carbon","name":"Gemini 4 Carbon"},{"value":"gemini-pro-orchestrator","name":"Orchestrator (Carbon)"}]}, {"id":"mode","name":"Mode","category":"mode","type":"select","currentValue":"accept-edits","options":[{"value":"accept-edits"}]} ]}`
+
+func TestApplyInitialConfig_SkipsEffortWhenThoughtLevelOmitted(t *testing.T) {
+	s := &acpSession{ctx: context.Background()}
+	if err := s.absorbConfigJSON([]byte(orchestratorOnlyFixture)); err != nil {
+		t.Fatal(err)
+	}
+	// A leftover medium effort must not fail start when Orchestrator hides thought_level.
+	if err := s.applyInitialConfig("gemini-pro-orchestrator", "medium"); err != nil {
+		t.Fatalf("expected leftover effort to be ignored, got %v", err)
+	}
+	if s.GetModel() != "gemini-pro-orchestrator" || s.GetReasoningEffort() != "" {
+		t.Fatalf("model=%q effort=%q", s.GetModel(), s.GetReasoningEffort())
+	}
+}
+
+const carbonWithOrchestratorFixture = `{"configOptions":[ {"id":"engine-choice","name":"Engine","category":"model","type":"select","currentValue":"gemini-4-carbon","options":[{"value":"gemini-4-carbon","name":"Carbon"},{"value":"gemini-pro-orchestrator","name":"Orchestrator (Carbon)"}]}, {"id":"budget","name":"Thinking","category":"thought_level","type":"select","currentValue":"medium","options":[{"value":"low"},{"value":"medium"},{"value":"high"}]} ]}`
+
+func TestApplyInitialConfig_SetsModelThenDropsUnsupportedEffort(t *testing.T) {
+	s, out, in := newTestSession(t, nil)
+	if err := s.absorbConfigJSON([]byte(carbonWithOrchestratorFixture)); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		var req struct {
+			ID     json.RawMessage
+			Method string
+			Params struct{ SessionID, ConfigID, Value string }
+		}
+		if err := json.NewDecoder(in).Decode(&req); err != nil {
+			done <- err
+			return
+		}
+		if req.Method != "session/set_config_option" || req.Params.ConfigID != "engine-choice" || req.Params.Value != "gemini-pro-orchestrator" {
+			done <- fmt.Errorf("wrong request: %+v", req)
+			return
+		}
+		_, err := fmt.Fprintf(out, "{\"id\":%s,\"result\":%s}\n", req.ID, orchestratorOnlyFixture)
+		done <- err
+	}()
+	if err := s.applyInitialConfig("gemini-pro-orchestrator", "medium"); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if s.GetModel() != "gemini-pro-orchestrator" {
+		t.Fatalf("model=%q", s.GetModel())
+	}
+	if s.GetReasoningEffort() != "" {
+		t.Fatalf("effort still set: %q", s.GetReasoningEffort())
+	}
+}
+
+func TestApplyInitialConfig_StillErrorsOnUnsupportedModel(t *testing.T) {
+	s := &acpSession{ctx: context.Background()}
+	if err := s.absorbConfigJSON([]byte(`{"configOptions":[{"id":"mode","name":"Mode","category":"mode","type":"select","currentValue":"accept-edits","options":[{"value":"accept-edits"}]}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.applyInitialConfig("gemini-pro-orchestrator", ""); err == nil {
+		t.Fatal("missing model selector should still fail")
+	}
+}
