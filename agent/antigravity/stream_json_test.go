@@ -65,7 +65,7 @@ func TestStreamJSONPreservesConversationIDWithoutLegacyChatFiles(t *testing.T) {
 {"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"hello"}}
 {"event":"result","result":{"conversation_id":"native-conversation","status":"SUCCESS","response":"hello"}}
 `
-	if err := s.readStreamJSON(strings.NewReader(input)); err != nil {
+	if _, err := s.readStreamJSON(strings.NewReader(input)); err != nil {
 		t.Fatal(err)
 	}
 	if s.CurrentSessionID() != "native-conversation" {
@@ -103,7 +103,7 @@ func TestStreamJSONResultFallbackAndFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer s.Close()
-			err = s.readStreamJSON(strings.NewReader(tc.input))
+			_, err = s.readStreamJSON(strings.NewReader(tc.input))
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err=%v", err)
 			}

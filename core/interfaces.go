@@ -420,6 +420,14 @@ type UserInputSteerer interface {
 	SteerUserInput(prompt string) (bool, error)
 }
 
+// MidTurnInputSession reports whether a running agent session can take extra
+// user input while a turn is still in flight. Sessions that start one process
+// or one blocking prompt per turn return false, so /ps queues the text as the
+// next turn instead of calling Send concurrently on the same conversation.
+type MidTurnInputSession interface {
+	AcceptsMidTurnInput() bool
+}
+
 // ToolAuthorizer is an optional interface for agents that support dynamic tool authorization.
 type ToolAuthorizer interface {
 	AddAllowedTools(tools ...string) error

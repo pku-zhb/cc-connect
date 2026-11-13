@@ -851,6 +851,10 @@ func (s *acpSession) CancelTurn() error {
 	})
 }
 
+// AcceptsMidTurnInput reports false: session/prompt blocks until the turn
+// ends, so input arriving mid-turn is queued by the engine as the next turn.
+func (s *acpSession) AcceptsMidTurnInput() bool { return false }
+
 func (s *acpSession) Alive() bool {
 	return s.alive.Load()
 }

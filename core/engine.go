@@ -7164,6 +7164,17 @@ func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsNoSession))
 		return
 	}
+	if serial, ok := state.agentSession.(MidTurnInputSession); ok && !serial.AcceptsMidTurnInput() {
+		// The agent cannot take input mid-turn: deliver the supplement as
+		// the next turn instead of running a second turn concurrently.
+		queued := *msg
+		queued.Content = text
+		if e.queueMessageForBusySession(p, &queued, iKey) {
+			return
+		}
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsSendFailed))
+		return
+	}
 	if err := state.agentSession.Send(text, "", nil, nil); err != nil {
 		slog.Error("ps: send failed", "error", err)
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPsSendFailed))

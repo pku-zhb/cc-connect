@@ -20,6 +20,13 @@ import (
 	"github.com/chenhg5/cc-connect/core"
 )
 
+// agyExitGrace bounds how long agy may keep running after its result event.
+var agyExitGrace = 30 * time.Second
+
+// AcceptsMidTurnInput reports false: each turn is its own agy process, so
+// input that arrives mid-turn must be queued as the next turn.
+func (as *antigravitySession) AcceptsMidTurnInput() bool { return false }
+
 // antigravitySession manages multi-turn conversations with the Antigravity CLI (agy).
 type antigravitySession struct {
 	cmd              string
@@ -36,6 +43,7 @@ type antigravitySession struct {
 	cancel           context.CancelFunc
 	wg               sync.WaitGroup
 	alive            atomic.Bool
+	turnActive       atomic.Bool // one agy process per conversation at a time
 	permissionBridge *agyPermissionBridge
 }
 
@@ -76,6 +84,17 @@ func (as *antigravitySession) Send(prompt string, messageID string, images []cor
 	if !as.alive.Load() {
 		return fmt.Errorf("session is closed")
 	}
+	// Every turn is a separate agy process resuming the same conversation;
+	// two at once would race on its state, so refuse instead of forking.
+	if !as.turnActive.CompareAndSwap(false, true) {
+		return fmt.Errorf("antigravity: a turn is already running on this conversation")
+	}
+	started := false
+	defer func() {
+		if !started {
+			as.turnActive.Store(false)
+		}
+	}()
 
 	// Capture existing chat logs so we can identify a new session on first turn
 	preEntries := make(map[string]bool)
@@ -161,7 +180,6 @@ func (as *antigravitySession) Send(prompt string, messageID string, images []cor
 		ctx, cancel = context.WithCancel(as.ctx)
 	}
 
-	started := false
 	defer func() {
 		if !started {
 			cancel()
@@ -239,12 +257,15 @@ func (as *antigravitySession) buildAntigravityArgs(chatID string, isResume bool,
 
 func (as *antigravitySession) readLoop(ctx context.Context, cmd *exec.Cmd, stdout io.ReadCloser, stderrBuf *bytes.Buffer, tempFiles []string, preEntries map[string]bool, sendStartedAt time.Time) {
 	defer as.wg.Done()
+	exited := make(chan struct{})
+	resultSeen := false
 	defer func() {
 		for _, f := range tempFiles {
 			_ = os.Remove(f)
 		}
 
 		err := cmd.Wait()
+		close(exited)
 
 		// Detect conversation ID if this was the first turn of a fresh session.
 		// agy may flush the chat file only while the process is exiting, so wait
@@ -270,7 +291,7 @@ func (as *antigravitySession) readLoop(ctx context.Context, cmd *exec.Cmd, stdou
 		}
 
 		sid := as.CurrentSessionID()
-		if err != nil {
+		if err != nil && !resultSeen {
 			stderrMsg := strings.TrimSpace(stderrBuf.String())
 			if stderrMsg != "" {
 				slog.Error("antigravitySession: process failed", "error", err, "stderr", stderrMsg)
@@ -281,7 +302,9 @@ func (as *antigravitySession) readLoop(ctx context.Context, cmd *exec.Cmd, stdou
 			}
 		}
 
-		// Finalize turn.
+		// Finalize turn. Clear the busy flag first so the engine can deliver
+		// the next queued message as soon as it sees the result.
+		as.turnActive.Store(false)
 		select {
 		case as.events <- core.Event{Type: core.EventResult, SessionID: sid, Done: true}:
 		case <-as.ctx.Done():
@@ -294,11 +317,27 @@ func (as *antigravitySession) readLoop(ctx context.Context, cmd *exec.Cmd, stdou
 	}()
 
 	if as.usesStreamJSON() {
-		if err := as.readStreamJSON(stdout); err != nil {
+		var err error
+		resultSeen, err = as.readStreamJSON(stdout)
+		if err != nil {
 			select {
 			case as.events <- core.Event{Type: core.EventError, Error: err}:
 			case <-as.ctx.Done():
 			}
+		}
+		if resultSeen {
+			// The turn is complete once the result arrives. Do not wait for
+			// stdout EOF: drain whatever follows and make sure a lingering
+			// process cannot keep the turn (and the zombie) open.
+			go func() { _, _ = io.Copy(io.Discard, stdout) }()
+			go func() {
+				select {
+				case <-exited:
+				case <-time.After(agyExitGrace):
+					slog.Warn("antigravitySession: agy still running after result; killing")
+					_ = cmd.Process.Kill()
+				}
+			}()
 		}
 		return
 	}

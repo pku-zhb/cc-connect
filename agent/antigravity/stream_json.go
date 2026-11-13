@@ -20,10 +20,12 @@ func (as *antigravitySession) usesStreamJSON() bool {
 
 // Modern agy supplies conversation IDs in its native stream instead of the
 // legacy .gemini/tmp chat files. Keep its wire JSON out of platform messages.
-func (as *antigravitySession) readStreamJSON(reader io.Reader) error {
+// It returns as soon as the result event arrives; resultSeen reports whether
+// the turn reached a result (even an unsuccessful one).
+func (as *antigravitySession) readStreamJSON(reader io.Reader) (resultSeen bool, err error) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
-	hasText, hasResult := false, false
+	hasText := false
 	for scanner.Scan() {
 		if len(scanner.Bytes()) == 0 {
 			continue
@@ -48,7 +50,7 @@ func (as *antigravitySession) readStreamJSON(reader io.Reader) error {
 			} `json:"result"`
 		}
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			return fmt.Errorf("antigravity: decode stream event: %w", err)
+			return false, fmt.Errorf("antigravity: decode stream event: %w", err)
 		}
 		sid := event.ConversationID
 		if sid == "" {
@@ -60,7 +62,7 @@ func (as *antigravitySession) readStreamJSON(reader io.Reader) error {
 		if sid != "" && sid != as.CurrentSessionID() {
 			as.chatID.Store(sid)
 			if err := as.emitStreamEvent(core.Event{Type: core.EventText, SessionID: sid}); err != nil {
-				return err
+				return false, err
 			}
 		}
 		var output core.Event
@@ -74,27 +76,26 @@ func (as *antigravitySession) readStreamJSON(reader io.Reader) error {
 				output = core.Event{Type: core.EventToolUse, ToolName: event.Step.ToolName, ToolInput: string(event.Step.ToolInfo.Parameters)}
 			}
 		case "result":
-			hasResult = true
 			if event.Result.Status != "SUCCESS" {
-				return fmt.Errorf("antigravity: turn ended with status %q: %s", event.Result.Status, event.Result.Response)
+				return true, fmt.Errorf("antigravity: turn ended with status %q: %s", event.Result.Status, event.Result.Response)
 			}
 			if !hasText && event.Result.Response != "" {
-				output = core.Event{Type: core.EventText, Content: event.Result.Response}
+				if err := as.emitStreamEvent(core.Event{Type: core.EventText, Content: event.Result.Response}); err != nil {
+					return true, err
+				}
 			}
+			return true, nil
 		}
 		if output.Type != "" {
 			if err := as.emitStreamEvent(output); err != nil {
-				return err
+				return false, err
 			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("antigravity: read stream: %w", err)
+		return false, fmt.Errorf("antigravity: read stream: %w", err)
 	}
-	if !hasResult {
-		return fmt.Errorf("antigravity: stream ended without a result")
-	}
-	return nil
+	return false, fmt.Errorf("antigravity: stream ended without a result")
 }
 
 func (as *antigravitySession) emitStreamEvent(event core.Event) error {
